@@ -40,6 +40,7 @@ export interface SkillPlan {
     skills: Array<{
         name: string
         description: string
+        category: 'core' | 'workflow' | 'constraints' | 'integration' | 'validation'
         concern: string
     }>
     reasoning: string
@@ -93,7 +94,7 @@ export async function planSkills(
             throw new Error('No JSON found in response')
         }
         skillPlan = JSON.parse(jsonMatch[0])
-        
+
         if (!skillPlan.skillCount || !Array.isArray(skillPlan.skills) || skillPlan.skills.length !== skillPlan.skillCount) {
             throw new Error('Invalid skill plan structure')
         }
@@ -104,6 +105,7 @@ export async function planSkills(
             skills: [{
                 name: 'generated-skill',
                 description: 'Generated skill based on user intent',
+                category: 'core',
                 concern: 'User intent',
             }],
             reasoning: 'Fallback: generating single skill due to planning error',
@@ -287,21 +289,29 @@ export async function runGeneration(
     const context = buildContext(intent, qa)
 
     const skillPlan = await planSkills(intent, qa)
-    
+
     const enhancedPrompt = `${context}
 
 ## Skill Generation Plan
 Generate exactly ${skillPlan.skillCount} skill(s) as planned:
 
-${skillPlan.skills.map((skill, index) => 
-    `Skill ${index + 1}: ${skill.name}
+${skillPlan.skills.map((skill, index) =>
+        `Skill ${index + 1}: ${skill.name}
 - Description: ${skill.description}
+- Category: ${skill.category}
 - Concern: ${skill.concern}`
-).join('\n\n')}
+    ).join('\n\n')}
 
 Reasoning: ${skillPlan.reasoning}
 
-Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
+IMPORTANT: Generate each skill according to its CATEGORY:
+- "workflow" → Use decision trees, numbered steps, sequential processes
+- "constraints" → Use MUST/SHOULD/NEVER rule patterns  
+- "core" → Describe capabilities with code examples
+- "integration" → Show tool setup, API patterns, connection workflows
+- "validation" → Include check criteria and verification steps
+
+Each skill must be standalone, match its category pattern, and include relevant code examples.`
 
     const { text: generatedOutput } = await generateText({
         model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
@@ -355,21 +365,29 @@ export async function* streamGeneration(
     const context = buildContext(intent, qa)
 
     const skillPlan = await planSkills(intent, qa)
-    
+
     const enhancedPrompt = `${context}
 
 ## Skill Generation Plan
 Generate exactly ${skillPlan.skillCount} skill(s) as planned:
 
-${skillPlan.skills.map((skill, index) => 
-    `Skill ${index + 1}: ${skill.name}
+${skillPlan.skills.map((skill, index) =>
+        `Skill ${index + 1}: ${skill.name}
 - Description: ${skill.description}
+- Category: ${skill.category}
 - Concern: ${skill.concern}`
-).join('\n\n')}
+    ).join('\n\n')}
 
 Reasoning: ${skillPlan.reasoning}
 
-Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
+IMPORTANT: Generate each skill according to its CATEGORY:
+- "workflow" → Use decision trees, numbered steps, sequential processes
+- "constraints" → Use MUST/SHOULD/NEVER rule patterns  
+- "core" → Describe capabilities with code examples
+- "integration" → Show tool setup, API patterns, connection workflows
+- "validation" → Include check criteria and verification steps
+
+Each skill must be standalone, match its category pattern, and include relevant code examples.`
 
     const { textStream } = streamText({
         model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
