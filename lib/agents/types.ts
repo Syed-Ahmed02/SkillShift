@@ -19,7 +19,7 @@ export interface QAPair {
 }
 
 export interface ValidationIssue {
-    type: 'spec_violation' | 'alignment' | 'quality'
+    type: 'spec_violation' | 'alignment' | 'quality' | 'workflow' | 'interoperability'
     severity: 'error' | 'warning'
     description: string
     suggestion: string
@@ -54,14 +54,26 @@ export interface SessionAnswerResponse {
     status: 'need_more_info' | 'ready'
     questions: ClarifierQuestion[]
     turn: number
+    maxTurnsReached?: boolean
+    message?: string
 }
 
 export interface GenerateRequest {
     sessionId: string
 }
 
+export interface GeneratedSkillResponse {
+    markdown: string
+    name?: string
+    description?: string
+    validationStatus: 'valid' | 'fixed' | 'failed'
+    issues?: ValidationIssue[]
+}
+
 export interface GenerateResponse {
     success: boolean
+    skills: GeneratedSkillResponse[]
+    // Backward compatibility - single skill fields
     skillMarkdown?: string
     name?: string
     description?: string

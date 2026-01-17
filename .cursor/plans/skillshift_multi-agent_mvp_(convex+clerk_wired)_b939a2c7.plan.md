@@ -57,7 +57,7 @@ Output is:
 
 ## Architecture
 
-```mermaid
+````mermaid
 sequenceDiagram
   participant U as User
   participant UI as Nextjs_UI
@@ -183,4 +183,6 @@ Server-side:
 
 ## Todos
 
-- `convex-schema`: Add Convex `schema.ts` + skills/session functions using `ctx.auth.getUserIdentity()`.
+
+
+````
