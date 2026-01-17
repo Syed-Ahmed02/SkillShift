@@ -1,5 +1,5 @@
 // Orchestrator agent that delegates to specialist agents as needed
-import { generateText } from 'ai'
+import { generateText, streamText } from 'ai'
 import { z } from 'zod'
 import { cerebrasProvider } from '@/lib/cerebras'
 import {
@@ -7,6 +7,7 @@ import {
     GENERATOR_SYSTEM_PROMPT,
     VALIDATOR_SYSTEM_PROMPT,
     REPAIR_SYSTEM_PROMPT,
+    PLANNER_SYSTEM_PROMPT,
     buildContext,
 } from './prompts'
 import type {
@@ -28,6 +29,19 @@ export const MAX_CLARIFICATION_TURNS = 10
 export interface ClarificationResult {
     status: 'need_more_info' | 'ready' | 'max_turns_reached'
     questions: ClarifierResponse['questions']
+    reasoning: string
+}
+
+/**
+ * Skill breakdown from the planner
+ */
+export interface SkillPlan {
+    skillCount: number
+    skills: Array<{
+        name: string
+        description: string
+        concern: string
+    }>
     reasoning: string
 }
 
@@ -55,6 +69,51 @@ export interface GenerationResult {
     validationStatus: 'valid' | 'fixed' | 'failed'
     issues: ValidatorResponse['issues']
     repairAttempts: number
+}
+
+/**
+ * Plan skills - analyzes intent and determines how many skills are needed, separating concerns
+ */
+export async function planSkills(
+    intent: string,
+    qa: QAPair[]
+): Promise<SkillPlan> {
+    const context = buildContext(intent, qa)
+
+    const { text } = await generateText({
+        model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
+        system: PLANNER_SYSTEM_PROMPT,
+        prompt: context,
+    })
+
+    // Parse the JSON response
+    let skillPlan: SkillPlan
+    try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) {
+            throw new Error('No JSON found in response')
+        }
+        skillPlan = JSON.parse(jsonMatch[0])
+        
+        // Validate structure
+        if (!skillPlan.skillCount || !Array.isArray(skillPlan.skills) || skillPlan.skills.length !== skillPlan.skillCount) {
+            throw new Error('Invalid skill plan structure')
+        }
+    } catch (error) {
+        console.error('Failed to parse skill plan:', text, error)
+        // Fallback: assume single skill
+        skillPlan = {
+            skillCount: 1,
+            skills: [{
+                name: 'generated-skill',
+                description: 'Generated skill based on user intent',
+                concern: 'User intent',
+            }],
+            reasoning: 'Fallback: generating single skill due to planning error',
+        }
+    }
+
+    return skillPlan
 }
 
 /**
@@ -230,11 +289,30 @@ export async function runGeneration(
 ): Promise<GenerationResult> {
     const context = buildContext(intent, qa)
 
+    // Step 0: Plan skills - determine how many and what concerns to separate
+    const skillPlan = await planSkills(intent, qa)
+    
+    // Build enhanced prompt with skill plan
+    const enhancedPrompt = `${context}
+
+## Skill Generation Plan
+Generate exactly ${skillPlan.skillCount} skill(s) as planned:
+
+${skillPlan.skills.map((skill, index) => 
+    `Skill ${index + 1}: ${skill.name}
+- Description: ${skill.description}
+- Concern: ${skill.concern}`
+).join('\n\n')}
+
+Reasoning: ${skillPlan.reasoning}
+
+Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
+
     // Step 1: Generate the skill(s)
     const { text: generatedOutput } = await generateText({
         model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
         system: GENERATOR_SYSTEM_PROMPT,
-        prompt: context,
+        prompt: enhancedPrompt,
     })
 
     // Step 2: Parse multiple skills
@@ -277,6 +355,95 @@ export async function runGeneration(
         issues: allIssues,
         repairAttempts: repairAttempts.current,
     }
+}
+
+/**
+ * Stream generation with conditional validation/repair delegation
+ * Streams text generation, then performs validation/repair after streaming completes
+ * Returns an async generator that yields text chunks and metadata
+ */
+export async function* streamGeneration(
+    intent: string,
+    qa: QAPair[]
+): AsyncGenerator<{ type: 'chunk'; text: string } | { type: 'complete'; result: GenerationResult }, void, unknown> {
+    const context = buildContext(intent, qa)
+
+    // Step 0: Plan skills - determine how many and what concerns to separate
+    const skillPlan = await planSkills(intent, qa)
+    
+    // Build enhanced prompt with skill plan
+    const enhancedPrompt = `${context}
+
+## Skill Generation Plan
+Generate exactly ${skillPlan.skillCount} skill(s) as planned:
+
+${skillPlan.skills.map((skill, index) => 
+    `Skill ${index + 1}: ${skill.name}
+- Description: ${skill.description}
+- Concern: ${skill.concern}`
+).join('\n\n')}
+
+Reasoning: ${skillPlan.reasoning}
+
+Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
+
+    // Step 1: Stream the skill generation
+    const { textStream } = streamText({
+        model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
+        system: GENERATOR_SYSTEM_PROMPT,
+        prompt: enhancedPrompt,
+    })
+
+    // Collect the full streamed output while yielding chunks
+    let generatedOutput = ''
+    for await (const textChunk of textStream) {
+        generatedOutput += textChunk
+        yield { type: 'chunk', text: textChunk }
+    }
+
+    // Step 2: Parse multiple skills from the complete output
+    const skillMarkdowns = parseMultipleSkills(generatedOutput.trim())
+
+    // Step 3: Validate and repair each skill (blocking after streaming)
+    const repairAttempts = { current: 0 }
+    const skills: GeneratedSkill[] = []
+
+    for (const skillMarkdown of skillMarkdowns) {
+        const skill = await validateAndRepairSkill(context, skillMarkdown, repairAttempts)
+        skills.push(skill)
+    }
+
+    // Determine overall status
+    const overallStatus: 'valid' | 'fixed' | 'failed' =
+        skills.some(s => s.validationStatus === 'failed') ? 'failed' :
+            skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
+                'valid'
+
+    const success = overallStatus !== 'failed'
+
+    // Collect all issues
+    const allIssues: ValidatorResponse['issues'] = []
+    for (const skill of skills) {
+        allIssues.push(...skill.issues)
+    }
+
+    // Backward compatibility: single skill fields (use first skill if only one)
+    const firstSkill = skills[0]
+
+    const result: GenerationResult = {
+        success,
+        skills,
+        // Backward compatibility fields
+        skillMarkdown: firstSkill?.markdown,
+        name: firstSkill?.name,
+        description: firstSkill?.description,
+        validationStatus: overallStatus,
+        issues: allIssues,
+        repairAttempts: repairAttempts.current,
+    }
+
+    // Yield final result
+    yield { type: 'complete', result }
 }
 
 /**
