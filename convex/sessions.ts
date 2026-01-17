@@ -88,6 +88,55 @@ export const setStatus = mutation({
             v.literal('completed'),
             v.literal('failed')
         ),
+        finalResult: v.optional(
+            v.object({
+                success: v.boolean(),
+                skills: v.array(
+                    v.object({
+                        markdown: v.string(),
+                        name: v.optional(v.string()),
+                        description: v.optional(v.string()),
+                        validationStatus: v.union(
+                            v.literal('valid'),
+                            v.literal('fixed'),
+                            v.literal('failed')
+                        ),
+                        issues: v.optional(
+                            v.array(
+                                v.object({
+                                    type: v.string(),
+                                    severity: v.string(),
+                                    description: v.string(),
+                                    suggestion: v.string(),
+                                })
+                            )
+                        ),
+                    })
+                ),
+                // Backward compatibility - single skill fields
+                skillMarkdown: v.optional(v.string()),
+                name: v.optional(v.string()),
+                description: v.optional(v.string()),
+                validationStatus: v.optional(
+                    v.union(
+                        v.literal('valid'),
+                        v.literal('fixed'),
+                        v.literal('failed')
+                    )
+                ),
+                issues: v.optional(
+                    v.array(
+                        v.object({
+                            type: v.string(),
+                            severity: v.string(),
+                            description: v.string(),
+                            suggestion: v.string(),
+                        })
+                    )
+                ),
+                repairAttempts: v.number(),
+            })
+        ),
     },
     handler: async (ctx, args) => {
         const identity = await ctx.auth.getUserIdentity()
@@ -100,10 +149,16 @@ export const setStatus = mutation({
             throw new Error('Session not found or not authorized')
         }
 
-        await ctx.db.patch(args.sessionId, {
+        const update: any = {
             status: args.status,
             updatedAt: Date.now(),
-        })
+        }
+
+        if (args.finalResult !== undefined) {
+            update.finalResult = args.finalResult
+        }
+
+        await ctx.db.patch(args.sessionId, update)
     },
 })
 

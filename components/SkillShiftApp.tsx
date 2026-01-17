@@ -4,7 +4,7 @@ import { useState, useCallback, useRef } from 'react'
 import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import type { Id } from '@/convex/_generated/dataModel'
-import { GenerationsSidebar, type Skill } from './GenerationsSidebar'
+import { GenerationsSidebar, type Skill, type Session } from './GenerationsSidebar'
 import { ClarifierPanel } from './ClarifierPanel'
 import { Loader } from './ai-elements/loader'
 import {
@@ -241,8 +241,27 @@ export function SkillShiftApp() {
                 })
             }
 
-            // Update session status to completed
-            if (currentSessionId) {
+            // Update session status to completed and save final result
+            if (currentSessionId && finalResult) {
+                try {
+                    await setSessionStatus({
+                        sessionId: currentSessionId,
+                        status: 'completed',
+                        finalResult: {
+                            success: finalResult.success,
+                            skills: finalResult.skills || [],
+                            skillMarkdown: finalResult.skillMarkdown,
+                            name: finalResult.name,
+                            description: finalResult.description,
+                            validationStatus: finalResult.validationStatus,
+                            issues: finalResult.issues,
+                            repairAttempts: finalResult.repairAttempts,
+                        },
+                    })
+                } catch (err) {
+                    console.error('Failed to update session status:', err)
+                }
+            } else if (currentSessionId) {
                 try {
                     await setSessionStatus({
                         sessionId: currentSessionId,
@@ -521,15 +540,15 @@ export function SkillShiftApp() {
     }, [])
 
     // Handle loading a session/conversation from sidebar
-    const handleLoadSession = useCallback((session: { _id: Id<'skillSessions'>, intent: string, qa: QAPair[], createdAt: number, updatedAt: number, status: string }) => {
+    const handleLoadSession = useCallback(async (session: Session) => {
         setSelectedSkillId(null)
         setCurrentSessionId(session._id)
-        setConversationState(session.status === 'completed' ? 'idle' : session.status === 'clarifying' ? 'clarifying' : 'idle')
         setError(null)
         setMaxTurnsReached(false)
         setMaxTurnsMessage('')
         intentRef.current = session.intent
         qaRef.current = session.qa
+        turnRef.current = session.turn
         pendingQuestionsRef.current = []
 
         // Build messages from the session
@@ -561,7 +580,84 @@ export function SkillShiftApp() {
             })
         })
 
+        // Add final skill result if session is completed and has finalResult
+        if (session.status === 'completed' && session.finalResult) {
+            const result = session.finalResult
+            const skills = result.skills || []
+
+            // Use the first skill's markdown or fall back to backward compatibility
+            const skillMarkdown = skills.length > 0
+                ? skills[0].markdown
+                : (result.skillMarkdown || '')
+
+            if (skillMarkdown) {
+                // Convert session skills to SingleSkillData format with proper typing
+                const skillsData: SingleSkillData[] = skills.map(skill => ({
+                    markdown: skill.markdown,
+                    name: skill.name,
+                    description: skill.description,
+                    validationStatus: skill.validationStatus,
+                    issues: skill.issues as ValidationIssue[] | undefined,
+                }))
+
+                newMessages.push({
+                    id: nanoid(),
+                    role: 'assistant',
+                    content: skillMarkdown,
+                    type: 'skill',
+                    skillData: {
+                        success: result.success,
+                        skills: skillsData,
+                        skillMarkdown: result.skillMarkdown,
+                        name: result.name,
+                        description: result.description,
+                        validationStatus: result.validationStatus || 'valid',
+                        issues: result.issues as ValidationIssue[] | undefined,
+                        repairAttempts: result.repairAttempts,
+                    },
+                    timestamp: session.updatedAt,
+                })
+            }
+        }
+
         setMessages(newMessages)
+
+        // If the session is in clarifying state, refetch pending questions
+        if (session.status === 'clarifying') {
+            setConversationState('generating') // Show loading state while fetching questions
+            try {
+                const response = await fetch('/api/skills/session/answer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        intent: session.intent,
+                        qa: session.qa,
+                        currentTurn: session.turn,
+                        newAnswers: [], // Empty to just get fresh questions
+                    }),
+                })
+
+                if (!response.ok) {
+                    throw new Error('Failed to load clarification questions')
+                }
+
+                const data = await response.json()
+
+                if (data.status === 'ready') {
+                    // Session is actually ready to generate
+                    setConversationState('idle')
+                } else {
+                    pendingQuestionsRef.current = data.questions || []
+                    setConversationState('clarifying')
+                }
+            } catch (err) {
+                console.error('Failed to refetch clarification questions:', err)
+                setError('Failed to load clarification questions. Please try again.')
+                setConversationState('idle')
+            }
+        } else {
+            setConversationState(session.status === 'completed' ? 'idle' : 'idle')
+        }
     }, [])
 
     // Handle save skill
