@@ -149,7 +149,7 @@ export const setStatus = mutation({
             throw new Error('Session not found or not authorized')
         }
 
-        const update: any = {
+        const update: Record<string, unknown> = {
             status: args.status,
             updatedAt: Date.now(),
         }
