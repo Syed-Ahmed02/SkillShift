@@ -29,8 +29,8 @@ import {
 } from './ai-elements/prompt-input'
 import type { ClarifierQuestion, QAPair, ValidationIssue } from '@/lib/agents/types'
 import { nanoid } from 'nanoid'
-import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, EditIcon, EyeIcon, ChevronDownIcon } from 'lucide-react'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
+import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, EditIcon, EyeIcon } from 'lucide-react'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeBlock, CodeBlockCopyButton } from './ai-elements/code-block'
 
@@ -82,6 +82,7 @@ export function SkillShiftApp() {
     const [maxTurnsReached, setMaxTurnsReached] = useState(false)
     const [maxTurnsMessage, setMaxTurnsMessage] = useState<string>('')
     const [editingMessageIds, setEditingMessageIds] = useState<Set<string>>(new Set())
+    const [selectedSkillIndex, setSelectedSkillIndex] = useState<Record<string, number>>({})
 
     // Refs for clarification flow
     const intentRef = useRef('')
@@ -810,52 +811,45 @@ export function SkillShiftApp() {
                                                     }
 
                                                     if (hasMultipleSkills) {
-                                                        // Multiple skills - first one expanded, others in collapsible sections
+                                                        // Multiple skills - show dropdown to select which skill to view
+                                                        const selectedIndex = selectedSkillIndex[message.id] ?? 0
+                                                        const selectedSkill = skills[selectedIndex] || primarySkill
+
                                                         return (
                                                             <div className="w-full max-w-2xl space-y-4">
-                                                                {/* First skill - always visible */}
-                                                                {renderSkill(primarySkill, 0, false)}
+                                                                {/* Dropdown to select skill */}
+                                                                <div className="flex items-center gap-2">
+                                                                    <Select
+                                                                        value={selectedIndex.toString()}
+                                                                        onValueChange={(value) => {
+                                                                            if (value) {
+                                                                                setSelectedSkillIndex(prev => ({
+                                                                                    ...prev,
+                                                                                    [message.id]: parseInt(value, 10)
+                                                                                }))
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        <SelectTrigger className="w-fit min-w-[200px]">
+                                                                            <SelectValue>
+                                                                                {selectedSkill.name || `Skill ${selectedIndex + 1}`}
+                                                                            </SelectValue>
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            {skills.map((skill, index) => (
+                                                                                <SelectItem key={index} value={index.toString()}>
+                                                                                    {skill.name || `Generated Skill ${index + 1}`}
+                                                                                </SelectItem>
+                                                                            ))}
+                                                                        </SelectContent>
+                                                                    </Select>
+                                                                    <span className="text-xs text-muted-foreground">
+                                                                        ({skills.length} {skills.length === 1 ? 'skill' : 'skills'})
+                                                                    </span>
+                                                                </div>
 
-                                                                {/* Additional skills in collapsible sections */}
-                                                                {skills.slice(1).map((skill, index) => (
-                                                                    <Collapsible key={index} defaultOpen={false}>
-                                                                        <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border bg-card px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-accent">
-                                                                            <span>Skill {index + 2}: {skill.name || `Generated Skill ${index + 2}`}</span>
-                                                                            <ChevronDownIcon className="size-4 transition-transform data-[state=open]:rotate-180" />
-                                                                        </CollapsibleTrigger>
-                                                                        <CollapsibleContent className="mt-4">
-                                                                            {renderSkill(skill, index + 1, false)}
-                                                                        </CollapsibleContent>
-                                                                    </Collapsible>
-                                                                ))}
-
-                                                                {/* Actions for the entire group */}
-                                                                <MessageActions>
-                                                                    <MessageAction
-                                                                        tooltip={isEditing ? "View Mode" : "Edit Mode"}
-                                                                        onClick={() => handleToggleEdit(message.id)}
-                                                                    >
-                                                                        {isEditing ? <EyeIcon className="size-4" /> : <EditIcon className="size-4" />}
-                                                                    </MessageAction>
-                                                                    <MessageAction
-                                                                        tooltip="Save to Library"
-                                                                        onClick={() => handleSaveSkill(message.id)}
-                                                                    >
-                                                                        <SaveIcon className="size-4" />
-                                                                    </MessageAction>
-                                                                    <MessageAction
-                                                                        tooltip="Regenerate"
-                                                                        onClick={() => handleRegenerate(message.id)}
-                                                                    >
-                                                                        <RefreshCwIcon className="size-4" />
-                                                                    </MessageAction>
-                                                                    <MessageAction
-                                                                        tooltip="Copy"
-                                                                        onClick={() => handleCopy(currentMarkdown)}
-                                                                    >
-                                                                        {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
-                                                                    </MessageAction>
-                                                                </MessageActions>
+                                                                {/* Render selected skill */}
+                                                                {renderSkill(selectedSkill, selectedIndex, true)}
                                                             </div>
                                                         )
                                                     } else {
