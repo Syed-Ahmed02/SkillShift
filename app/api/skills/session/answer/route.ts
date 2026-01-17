@@ -1,17 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { generateText } from 'ai'
-import { cerebrasProvider } from '@/lib/cerebras'
-import {
-    CLARIFIER_SYSTEM_PROMPT,
-    buildContext,
-} from '@/lib/agents/prompts'
+import { runClarification } from '@/lib/agents/orchestrator'
 import type {
     SessionAnswerResponse,
-    ClarifierResponse,
     QAPair,
 } from '@/lib/agents/types'
-
-const MAX_TURNS = 3
 
 interface AnswerRequestBody {
     intent: string
@@ -42,45 +34,24 @@ export async function POST(request: NextRequest) {
 
         const currentTurn = (body.currentTurn || 1) + 1
 
-        // If we've reached max turns, signal ready
-        if (currentTurn > MAX_TURNS) {
+        // Run orchestrator's clarification with accumulated Q&A
+        const clarificationResult = await runClarification(body.intent, allQA, currentTurn)
+
+        // Handle max turns reached - return special status so UI can prompt skip
+        if (clarificationResult.status === 'max_turns_reached') {
             const response: SessionAnswerResponse = {
-                status: 'ready',
+                status: 'need_more_info', // Still need more info but suggest skipping
                 questions: [],
                 turn: currentTurn,
+                maxTurnsReached: true,
+                message: clarificationResult.reasoning,
             }
             return NextResponse.json(response)
         }
 
-        // Run clarifier agent with updated context
-        const context = buildContext(body.intent, allQA)
-
-        const { text } = await generateText({
-            model: cerebrasProvider('llama3.1-8b'),
-            system: CLARIFIER_SYSTEM_PROMPT,
-            prompt: context,
-        })
-
-        // Parse the JSON response
-        let clarifierResponse: ClarifierResponse
-        try {
-            const jsonMatch = text.match(/\{[\s\S]*\}/)
-            if (!jsonMatch) {
-                throw new Error('No JSON found in response')
-            }
-            clarifierResponse = JSON.parse(jsonMatch[0])
-        } catch {
-            console.error('Failed to parse clarifier response:', text)
-            clarifierResponse = {
-                status: 'ready',
-                questions: [],
-                reasoning: 'Proceeding with generation based on provided context.',
-            }
-        }
-
         const response: SessionAnswerResponse = {
-            status: clarifierResponse.status,
-            questions: clarifierResponse.questions,
+            status: clarificationResult.status === 'ready' ? 'ready' : 'need_more_info',
+            questions: clarificationResult.questions,
             turn: currentTurn,
         }
 
@@ -93,4 +64,3 @@ export async function POST(request: NextRequest) {
         )
     }
 }
-

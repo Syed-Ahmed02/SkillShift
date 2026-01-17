@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@ai-sdk/cerebras':
         specifier: ^2.0.14
-        version: 2.0.14(zod@3.25.76)
+        version: 2.0.14(zod@4.3.5)
       '@base-ui/react':
         specifier: ^1.1.0
         version: 1.1.0(@types/react@19.2.8)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -31,7 +31,7 @@ importers:
         version: 12.10.0(@types/react@19.2.8)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       ai:
         specifier: ^6.0.39
-        version: 6.0.39(zod@3.25.76)
+        version: 6.0.39(zod@4.3.5)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -86,6 +86,9 @@ importers:
       use-stick-to-bottom:
         specifier: ^1.1.1
         version: 1.1.1(react@19.2.3)
+      zod:
+        specifier: ^4.3.5
+        version: 4.3.5
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -4368,32 +4371,32 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/cerebras@2.0.14(zod@3.25.76)':
+  '@ai-sdk/cerebras@2.0.14(zod@4.3.5)':
     dependencies:
-      '@ai-sdk/openai-compatible': 2.0.13(zod@3.25.76)
+      '@ai-sdk/openai-compatible': 2.0.13(zod@4.3.5)
       '@ai-sdk/provider': 3.0.4
-      '@ai-sdk/provider-utils': 4.0.8(zod@3.25.76)
-      zod: 3.25.76
+      '@ai-sdk/provider-utils': 4.0.8(zod@4.3.5)
+      zod: 4.3.5
 
-  '@ai-sdk/gateway@3.0.16(zod@3.25.76)':
+  '@ai-sdk/gateway@3.0.16(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.4
-      '@ai-sdk/provider-utils': 4.0.8(zod@3.25.76)
+      '@ai-sdk/provider-utils': 4.0.8(zod@4.3.5)
       '@vercel/oidc': 3.1.0
-      zod: 3.25.76
+      zod: 4.3.5
 
-  '@ai-sdk/openai-compatible@2.0.13(zod@3.25.76)':
+  '@ai-sdk/openai-compatible@2.0.13(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.4
-      '@ai-sdk/provider-utils': 4.0.8(zod@3.25.76)
-      zod: 3.25.76
+      '@ai-sdk/provider-utils': 4.0.8(zod@4.3.5)
+      zod: 4.3.5
 
-  '@ai-sdk/provider-utils@4.0.8(zod@3.25.76)':
+  '@ai-sdk/provider-utils@4.0.8(zod@4.3.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.4
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.6
-      zod: 3.25.76
+      zod: 4.3.5
 
   '@ai-sdk/provider@3.0.4':
     dependencies:
@@ -5750,13 +5753,13 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@6.0.39(zod@3.25.76):
+  ai@6.0.39(zod@4.3.5):
     dependencies:
-      '@ai-sdk/gateway': 3.0.16(zod@3.25.76)
+      '@ai-sdk/gateway': 3.0.16(zod@4.3.5)
       '@ai-sdk/provider': 3.0.4
-      '@ai-sdk/provider-utils': 4.0.8(zod@3.25.76)
+      '@ai-sdk/provider-utils': 4.0.8(zod@4.3.5)
       '@opentelemetry/api': 1.9.0
-      zod: 3.25.76
+      zod: 4.3.5
 
   ajv-formats@3.0.1(ajv@8.17.1):
     optionalDependencies:

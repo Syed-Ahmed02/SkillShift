@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { generateText } from 'ai'
-import { cerebrasProvider } from '@/lib/cerebras'
-import {
-    CLARIFIER_SYSTEM_PROMPT,
-    buildContext,
-} from '@/lib/agents/prompts'
+import { runClarification } from '@/lib/agents/orchestrator'
 import type {
     SessionStartRequest,
     SessionStartResponse,
-    ClarifierResponse,
 } from '@/lib/agents/types'
 
 export async function POST(request: NextRequest) {
@@ -30,41 +24,16 @@ export async function POST(request: NextRequest) {
             )
         }
 
-        // Run clarifier agent
-        const context = buildContext(intent, [])
-
-        const { text } = await generateText({
-            model: cerebrasProvider('llama3.1-8b'),
-            system: CLARIFIER_SYSTEM_PROMPT,
-            prompt: context,
-        })
-
-        // Parse the JSON response
-        let clarifierResponse: ClarifierResponse
-        try {
-            // Extract JSON from the response (handle potential markdown code blocks)
-            const jsonMatch = text.match(/\{[\s\S]*\}/)
-            if (!jsonMatch) {
-                throw new Error('No JSON found in response')
-            }
-            clarifierResponse = JSON.parse(jsonMatch[0])
-        } catch {
-            console.error('Failed to parse clarifier response:', text)
-            // Fallback: assume ready if parsing fails
-            clarifierResponse = {
-                status: 'ready',
-                questions: [],
-                reasoning: 'Proceeding with generation based on provided intent.',
-            }
-        }
+        // Run orchestrator's clarification
+        const clarificationResult = await runClarification(intent, [], 0)
 
         // Generate a temporary session ID (client will create real one in Convex)
         const tempSessionId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`
 
         const response: SessionStartResponse = {
             sessionId: tempSessionId,
-            status: clarifierResponse.status,
-            questions: clarifierResponse.questions,
+            status: clarificationResult.status === 'ready' ? 'ready' : 'need_more_info',
+            questions: clarificationResult.questions,
             turn: 1,
         }
 
@@ -77,4 +46,3 @@ export async function POST(request: NextRequest) {
         )
     }
 }
-

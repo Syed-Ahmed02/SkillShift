@@ -5,7 +5,7 @@ import { useMutation } from 'convex/react'
 import { api } from '@/convex/_generated/api'
 import type { Id } from '@/convex/_generated/dataModel'
 import { GenerationsSidebar, type Skill } from './GenerationsSidebar'
-import { Button } from './ui/button'
+import { ClarifierPanel } from './ClarifierPanel'
 import { Loader } from './ai-elements/loader'
 import { CodeBlock, CodeBlockCopyButton } from './ai-elements/code-block'
 import {
@@ -29,11 +29,21 @@ import {
 } from './ai-elements/prompt-input'
 import type { ClarifierQuestion, QAPair, ValidationIssue } from '@/lib/agents/types'
 import { nanoid } from 'nanoid'
-import { MessageCircleIcon, SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon } from 'lucide-react'
+import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon } from 'lucide-react'
 
 // Types
+interface SingleSkillData {
+    markdown: string
+    name?: string
+    description?: string
+    validationStatus: 'valid' | 'fixed' | 'failed'
+    issues?: ValidationIssue[]
+}
+
 interface GenerationResult {
     success: boolean
+    skills: SingleSkillData[]
+    // Backward compatibility - single skill fields
     skillMarkdown?: string
     name?: string
     description?: string
@@ -63,6 +73,9 @@ export function SkillShiftApp() {
     const [selectedSkillId, setSelectedSkillId] = useState<Id<'skills'> | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
+    const [isProcessing, setIsProcessing] = useState(false)
+    const [maxTurnsReached, setMaxTurnsReached] = useState(false)
+    const [maxTurnsMessage, setMaxTurnsMessage] = useState<string>('')
 
     // Refs for clarification flow
     const intentRef = useRef('')
@@ -94,7 +107,7 @@ export function SkillShiftApp() {
         setMessages(prev => prev.filter(msg => msg.id !== id))
     }, [])
 
-    // Generate skill
+    // Generate skill(s)
     const generateSkill = useCallback(async (intent: string, qa: QAPair[]) => {
         const loadingId = addMessage({
             role: 'assistant',
@@ -116,13 +129,42 @@ export function SkillShiftApp() {
 
             const data: GenerationResult = await response.json()
 
-            updateMessage(loadingId, {
-                content: data.skillMarkdown || 'Generated skill',
-                type: 'skill',
-                skillData: data,
-            })
+            // Remove loading message
+            removeMessage(loadingId)
+
+            // Add each skill as a separate message
+            if (data.skills && data.skills.length > 0) {
+                data.skills.forEach((skill) => {
+                    addMessage({
+                        role: 'assistant',
+                        content: skill.markdown || 'Generated skill',
+                        type: 'skill',
+                        skillData: {
+                            success: data.success,
+                            skills: [skill],
+                            // Backward compatibility
+                            skillMarkdown: skill.markdown,
+                            name: skill.name,
+                            description: skill.description,
+                            validationStatus: skill.validationStatus,
+                            issues: skill.issues,
+                            repairAttempts: data.repairAttempts,
+                        },
+                    })
+                })
+            } else if (data.skillMarkdown) {
+                // Backward compatibility - single skill format
+                addMessage({
+                    role: 'assistant',
+                    content: data.skillMarkdown || 'Generated skill',
+                    type: 'skill',
+                    skillData: data,
+                })
+            }
 
             setConversationState('idle')
+            setMaxTurnsReached(false)
+            setMaxTurnsMessage('')
         } catch (err) {
             updateMessage(loadingId, {
                 content: err instanceof Error ? err.message : 'An error occurred',
@@ -130,143 +172,142 @@ export function SkillShiftApp() {
             })
             setConversationState('idle')
         }
-    }, [addMessage, updateMessage])
+    }, [addMessage, removeMessage, updateMessage])
 
-    // Handle user message submission
+    // Handle structured answers from ClarifierPanel
+    const handleClarifierSubmit = useCallback(async (answers: Array<{ question: string; answer: string }>) => {
+        if (answers.length === 0) return
+
+        setIsProcessing(true)
+        setError(null)
+
+        // Add user's answers to Q&A
+        qaRef.current = [...qaRef.current, ...answers]
+
+        // Add a summary message showing user's answers
+        const answerSummary = answers.map(a => `**${a.question}**\n${a.answer}`).join('\n\n')
+        addMessage({
+            role: 'user',
+            content: answerSummary,
+            type: 'answer',
+        })
+
+        // Show loading
+        const loadingId = addMessage({
+            role: 'assistant',
+            content: 'Processing your answers...',
+            type: 'loading',
+        })
+
+        try {
+            const response = await fetch('/api/skills/session/answer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    intent: intentRef.current,
+                    qa: qaRef.current,
+                    currentTurn: turnRef.current,
+                    newAnswers: answers,
+                }),
+            })
+
+            if (!response.ok) {
+                const data = await response.json()
+                throw new Error(data.error || 'Failed to process answers')
+            }
+
+            const data = await response.json()
+            turnRef.current = data.turn
+
+            removeMessage(loadingId)
+
+            // Handle max turns reached
+            if (data.maxTurnsReached) {
+                setMaxTurnsReached(true)
+                setMaxTurnsMessage(data.message || '')
+            }
+
+            if (data.status === 'ready') {
+                setConversationState('generating')
+                pendingQuestionsRef.current = []
+                await generateSkill(intentRef.current, qaRef.current)
+            } else {
+                // Just update pending questions - ClarifierPanel will render them
+                pendingQuestionsRef.current = data.questions || []
+            }
+        } catch (err) {
+            updateMessage(loadingId, {
+                content: err instanceof Error ? err.message : 'An error occurred',
+                type: 'error',
+            })
+            setConversationState('idle')
+        } finally {
+            setIsProcessing(false)
+        }
+    }, [addMessage, removeMessage, updateMessage, generateSkill])
+
+    // Handle new intent submission
     const handleSubmit = useCallback(async (message: PromptInputMessage) => {
         const text = message.text.trim()
         if (!text) return
 
         setError(null)
+        setIsProcessing(true)
 
-        // If we're in clarification mode, treat as answer
-        if (conversationState === 'clarifying' && pendingQuestionsRef.current.length > 0) {
-            // Add user's answer message
-            addMessage({
-                role: 'user',
-                content: text,
-                type: 'answer',
+        // New intent - start session
+        addMessage({
+            role: 'user',
+            content: text,
+            type: 'intent',
+        })
+
+        intentRef.current = text
+        qaRef.current = []
+        turnRef.current = 0
+        pendingQuestionsRef.current = []
+        setMaxTurnsReached(false)
+        setMaxTurnsMessage('')
+
+        const loadingId = addMessage({
+            role: 'assistant',
+            content: 'Analyzing your request...',
+            type: 'loading',
+        })
+
+        try {
+            const response = await fetch('/api/skills/session/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ intent: text }),
             })
 
-            // Build answers from the text (user provides answers naturally)
-            const answers = pendingQuestionsRef.current.map((q, i) => ({
-                question: q.question,
-                answer: i === 0 ? text : '', // For simplicity, apply to first question
-            })).filter(a => a.answer)
-
-            qaRef.current = [...qaRef.current, ...answers]
-
-            // Show loading
-            const loadingId = addMessage({
-                role: 'assistant',
-                content: 'Processing your answers...',
-                type: 'loading',
-            })
-
-            try {
-                const response = await fetch('/api/skills/session/answer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        intent: intentRef.current,
-                        qa: qaRef.current,
-                        currentTurn: turnRef.current,
-                        newAnswers: answers,
-                    }),
-                })
-
-                if (!response.ok) {
-                    const data = await response.json()
-                    throw new Error(data.error || 'Failed to process answers')
-                }
-
+            if (!response.ok) {
                 const data = await response.json()
-                turnRef.current = data.turn
-
-                removeMessage(loadingId)
-
-                if (data.status === 'ready') {
-                    setConversationState('generating')
-                    pendingQuestionsRef.current = []
-                    await generateSkill(intentRef.current, qaRef.current)
-                } else {
-                    pendingQuestionsRef.current = data.questions
-                    addMessage({
-                        role: 'assistant',
-                        content: formatQuestions(data.questions),
-                        type: 'question',
-                        questions: data.questions,
-                    })
-                }
-            } catch (err) {
-                updateMessage(loadingId, {
-                    content: err instanceof Error ? err.message : 'An error occurred',
-                    type: 'error',
-                })
-                setConversationState('idle')
+                throw new Error(data.error || 'Failed to start session')
             }
-        } else {
-            // New intent - start session
-            addMessage({
-                role: 'user',
-                content: text,
-                type: 'intent',
-            })
 
-            intentRef.current = text
-            qaRef.current = []
-            turnRef.current = 0
-            pendingQuestionsRef.current = []
+            const data = await response.json()
+            turnRef.current = data.turn
 
-            const loadingId = addMessage({
-                role: 'assistant',
-                content: 'Analyzing your request...',
-                type: 'loading',
-            })
+            removeMessage(loadingId)
 
-            try {
-                const response = await fetch('/api/skills/session/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ intent: text }),
-                })
-
-                if (!response.ok) {
-                    const data = await response.json()
-                    throw new Error(data.error || 'Failed to start session')
-                }
-
-                const data = await response.json()
-                turnRef.current = data.turn
-
-                removeMessage(loadingId)
-
-                if (data.status === 'ready') {
-                    setConversationState('generating')
-                    await generateSkill(text, [])
-                } else {
-                    setConversationState('clarifying')
-                    pendingQuestionsRef.current = data.questions
-                    addMessage({
-                        role: 'assistant',
-                        content: formatQuestions(data.questions),
-                        type: 'question',
-                        questions: data.questions,
-                    })
-                }
-            } catch (err) {
-                updateMessage(loadingId, {
-                    content: err instanceof Error ? err.message : 'An error occurred',
-                    type: 'error',
-                })
+            if (data.status === 'ready') {
+                setConversationState('generating')
+                await generateSkill(text, [])
+            } else {
+                // Just set state and pending questions - ClarifierPanel will render them
+                setConversationState('clarifying')
+                pendingQuestionsRef.current = data.questions || []
             }
+        } catch (err) {
+            updateMessage(loadingId, {
+                content: err instanceof Error ? err.message : 'An error occurred',
+                type: 'error',
+            })
+        } finally {
+            setIsProcessing(false)
         }
-    }, [conversationState, addMessage, removeMessage, updateMessage, generateSkill])
-
-    // Format questions for display
-    const formatQuestions = (questions: ClarifierQuestion[]) => {
-        return questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n\n')
-    }
+    }, [addMessage, removeMessage, updateMessage, generateSkill])
 
     // Handle new chat
     const handleNewChat = useCallback(() => {
@@ -274,6 +315,8 @@ export function SkillShiftApp() {
         setSelectedSkillId(null)
         setConversationState('idle')
         setError(null)
+        setMaxTurnsReached(false)
+        setMaxTurnsMessage('')
         intentRef.current = ''
         qaRef.current = []
         turnRef.current = 0
@@ -285,6 +328,8 @@ export function SkillShiftApp() {
         setSelectedSkillId(skill._id)
         setConversationState('idle')
         setError(null)
+        setMaxTurnsReached(false)
+        setMaxTurnsMessage('')
         intentRef.current = skill.sourceIntent
         qaRef.current = skill.qaSnapshot
         pendingQuestionsRef.current = []
@@ -326,10 +371,18 @@ export function SkillShiftApp() {
             type: 'skill',
             skillData: {
                 success: true,
+                skills: [{
+                    markdown: skill.skillMarkdown,
+                    name: skill.name,
+                    description: skill.description,
+                    validationStatus: 'valid',
+                }],
+                // Backward compatibility
                 skillMarkdown: skill.skillMarkdown,
                 name: skill.name,
                 description: skill.description,
                 validationStatus: 'valid',
+                issues: [],
                 repairAttempts: 0,
             },
             timestamp: skill.updatedAt,
@@ -341,16 +394,30 @@ export function SkillShiftApp() {
     // Handle save skill
     const handleSaveSkill = useCallback(async (messageId: string) => {
         const message = messages.find(m => m.id === messageId)
-        if (!message?.skillData?.skillMarkdown || !message.skillData.name) {
+        if (!message?.skillData) {
+            setError('Cannot save: skill data is missing')
+            return
+        }
+
+        // Use the first skill from the skills array, or fall back to backward compatibility fields
+        const skillToSave = message.skillData.skills?.[0] || {
+            markdown: message.skillData.skillMarkdown || '',
+            name: message.skillData.name,
+            description: message.skillData.description,
+            validationStatus: message.skillData.validationStatus,
+            issues: message.skillData.issues,
+        }
+
+        if (!skillToSave.markdown || !skillToSave.name) {
             setError('Cannot save: skill data is missing')
             return
         }
 
         try {
             await createSkill({
-                name: message.skillData.name,
-                description: message.skillData.description || '',
-                skillMarkdown: message.skillData.skillMarkdown,
+                name: skillToSave.name,
+                description: skillToSave.description || '',
+                skillMarkdown: skillToSave.markdown,
                 sourceIntent: intentRef.current,
                 qaSnapshot: qaRef.current,
             })
@@ -381,11 +448,14 @@ export function SkillShiftApp() {
     const handleSkipClarification = useCallback(() => {
         setConversationState('generating')
         pendingQuestionsRef.current = []
+        setMaxTurnsReached(false)
+        setMaxTurnsMessage('')
         generateSkill(intentRef.current, qaRef.current)
     }, [generateSkill])
 
-    const isLoading = conversationState === 'generating'
+    const isLoading = conversationState === 'generating' || isProcessing
     const isClarifying = conversationState === 'clarifying'
+    const hasPendingQuestions = pendingQuestionsRef.current.length > 0
 
     return (
         <div className="flex h-full bg-background">
@@ -431,106 +501,120 @@ export function SkillShiftApp() {
                                 </div>
                             </ConversationEmptyState>
                         ) : (
-                            messages.map((message) => (
-                                <Message key={message.id} from={message.role}>
-                                    <MessageContent>
-                                        {message.type === 'loading' ? (
-                                            <div className="flex items-center gap-3">
-                                                <Loader size={16} />
-                                                <span className="text-muted-foreground">{message.content}</span>
-                                            </div>
-                                        ) : message.type === 'skill' && message.skillData?.skillMarkdown ? (
-                                            <div className="w-full max-w-2xl space-y-4">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-medium">{message.skillData.name || 'Generated Skill'}</span>
-                                                    {message.skillData.validationStatus === 'valid' && (
-                                                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
-                                                    )}
-                                                    {message.skillData.validationStatus === 'fixed' && (
-                                                        <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
-                                                    )}
+                            <>
+                                {messages.map((message) => (
+                                    <Message key={message.id} from={message.role}>
+                                        <MessageContent>
+                                            {message.type === 'loading' ? (
+                                                <div className="flex items-center gap-3">
+                                                    <Loader size={16} />
+                                                    <span className="text-muted-foreground">{message.content}</span>
                                                 </div>
-                                                <CodeBlock code={message.skillData.skillMarkdown} language="markdown">
-                                                    <CodeBlockCopyButton />
-                                                </CodeBlock>
-                                                <MessageActions>
-                                                    <MessageAction
-                                                        tooltip="Save to Library"
-                                                        onClick={() => handleSaveSkill(message.id)}
-                                                    >
-                                                        <SaveIcon className="size-4" />
-                                                    </MessageAction>
-                                                    <MessageAction
-                                                        tooltip="Regenerate"
-                                                        onClick={() => handleRegenerate(message.id)}
-                                                    >
-                                                        <RefreshCwIcon className="size-4" />
-                                                    </MessageAction>
-                                                    <MessageAction
-                                                        tooltip="Copy"
-                                                        onClick={() => handleCopy(message.skillData!.skillMarkdown!)}
-                                                    >
-                                                        {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
-                                                    </MessageAction>
-                                                </MessageActions>
-                                            </div>
-                                        ) : message.type === 'error' ? (
-                                            <div className="text-destructive">{message.content}</div>
-                                        ) : message.type === 'question' ? (
-                                            <div className="space-y-3">
-                                                <p className="text-muted-foreground">I have a few questions to help create a better skill:</p>
+                                            ) : message.type === 'skill' && message.skillData ? (
+                                                (() => {
+                                                    // Get skill data - prefer first from skills array, fall back to backward compat fields
+                                                    const skillData = message.skillData.skills?.[0] || {
+                                                        markdown: message.skillData.skillMarkdown || '',
+                                                        name: message.skillData.name,
+                                                        description: message.skillData.description,
+                                                        validationStatus: message.skillData.validationStatus,
+                                                        issues: message.skillData.issues,
+                                                    }
+
+                                                    if (!skillData.markdown) {
+                                                        return <div className="text-muted-foreground">No skill content</div>
+                                                    }
+
+                                                    return (
+                                                        <div className="w-full max-w-2xl space-y-4">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="font-medium">{skillData.name || 'Generated Skill'}</span>
+                                                                {message.skillData.skills && message.skillData.skills.length > 1 && (
+                                                                    <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-600">
+                                                                        {message.skillData.skills.length} skills
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <CodeBlock code={skillData.markdown} language="markdown">
+                                                                <CodeBlockCopyButton />
+                                                            </CodeBlock>
+                                                            <MessageActions>
+                                                                <MessageAction
+                                                                    tooltip="Save to Library"
+                                                                    onClick={() => handleSaveSkill(message.id)}
+                                                                >
+                                                                    <SaveIcon className="size-4" />
+                                                                </MessageAction>
+                                                                <MessageAction
+                                                                    tooltip="Regenerate"
+                                                                    onClick={() => handleRegenerate(message.id)}
+                                                                >
+                                                                    <RefreshCwIcon className="size-4" />
+                                                                </MessageAction>
+                                                                <MessageAction
+                                                                    tooltip="Copy"
+                                                                    onClick={() => handleCopy(skillData.markdown)}
+                                                                >
+                                                                    {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+                                                                </MessageAction>
+                                                            </MessageActions>
+                                                        </div>
+                                                    )
+                                                })()
+                                            ) : message.type === 'error' ? (
+                                                <div className="text-destructive">{message.content}</div>
+                                            ) : message.type === 'question' ? (
+                                                <div className="whitespace-pre-wrap text-muted-foreground italic">
+                                                    Q: {message.content}
+                                                </div>
+                                            ) : (
                                                 <div className="whitespace-pre-wrap">{message.content}</div>
-                                                {isClarifying && message.id === messages[messages.length - 1]?.id && (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        onClick={handleSkipClarification}
-                                                        className="mt-2"
-                                                    >
-                                                        Skip and generate now
-                                                    </Button>
-                                                )}
-                                            </div>
-                                        ) : (
-                                            <div className="whitespace-pre-wrap">{message.content}</div>
-                                        )}
-                                    </MessageContent>
-                                </Message>
-                            ))
+                                            )}
+                                        </MessageContent>
+                                    </Message>
+                                ))}
+
+                                {/* Clarifier Panel - shown when we have pending questions */}
+                                {isClarifying && hasPendingQuestions && (
+                                    <div className="mt-6">
+                                        <ClarifierPanel
+                                            questions={pendingQuestionsRef.current}
+                                            onSubmit={handleClarifierSubmit}
+                                            onSkip={handleSkipClarification}
+                                            isLoading={isLoading}
+                                            turn={turnRef.current}
+                                            qa={qaRef.current}
+                                            maxTurnsReached={maxTurnsReached}
+                                            maxTurnsMessage={maxTurnsMessage}
+                                        />
+                                    </div>
+                                )}
+                            </>
                         )}
                     </ConversationContent>
                     <ConversationScrollButton />
                 </Conversation>
 
-                {/* Input */}
-                <div className="border-t bg-background/95 px-4 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-                    <div className="mx-auto max-w-3xl">
-                        <PromptInput
-                            onSubmit={handleSubmit}
-                            className="rounded-xl border shadow-sm"
-                        >
-                            <PromptInputTextarea
-                                placeholder={
-                                    isClarifying
-                                        ? "Answer the questions above..."
-                                        : "Describe the skill you want to create..."
-                                }
-                                disabled={isLoading}
-                            />
-                            <PromptInputFooter>
-                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                    {isClarifying && (
-                                        <span className="flex items-center gap-1">
-                                            <MessageCircleIcon className="size-3" />
-                                            Clarifying
-                                        </span>
-                                    )}
-                                </div>
-                                <PromptInputSubmit disabled={isLoading} />
-                            </PromptInputFooter>
-                        </PromptInput>
+                {/* Input - only show for new intents, not during clarification */}
+                {!isClarifying && (
+                    <div className="border-t bg-background/95 px-4 py-4 backdrop-blur supports-backdrop-filter:bg-background/60">
+                        <div className="mx-auto max-w-3xl">
+                            <PromptInput
+                                onSubmit={handleSubmit}
+                                className="rounded-xl border shadow-sm"
+                            >
+                                <PromptInputTextarea
+                                    placeholder="Describe the skill you want to create..."
+                                    disabled={isLoading}
+                                />
+                                <PromptInputFooter>
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground" />
+                                    <PromptInputSubmit disabled={isLoading} />
+                                </PromptInputFooter>
+                            </PromptInput>
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
         </div>
     )
