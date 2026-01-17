@@ -24,6 +24,108 @@ const MAX_REPAIR_ATTEMPTS = 2
 export const MAX_CLARIFICATION_TURNS = 10
 
 /**
+ * Calculate similarity between two strings (0-1, where 1 is identical)
+ */
+function calculateSimilarity(str1: string, str2: string): number {
+    const s1 = str1.toLowerCase().trim()
+    const s2 = str2.toLowerCase().trim()
+
+    if (s1 === s2) return 1.0
+    if (s1.length === 0 || s2.length === 0) return 0.0
+
+    // Check if one contains the other
+    if (s1.includes(s2) || s2.includes(s1)) {
+        return Math.min(s1.length, s2.length) / Math.max(s1.length, s2.length)
+    }
+
+    // Word overlap similarity
+    const words1 = new Set(s1.split(/\s+/).filter(w => w.length > 2))
+    const words2 = new Set(s2.split(/\s+/).filter(w => w.length > 2))
+
+    if (words1.size === 0 || words2.size === 0) return 0.0
+
+    const intersection = new Set([...words1].filter(w => words2.has(w)))
+    const union = new Set([...words1, ...words2])
+
+    return intersection.size / union.size
+}
+
+/**
+ * Check if two skills are duplicates or too similar
+ */
+function areSkillsSimilar(skill1: GeneratedSkill, skill2: GeneratedSkill): boolean {
+    // Check name similarity
+    const name1 = skill1.name?.toLowerCase().trim() || ''
+    const name2 = skill2.name?.toLowerCase().trim() || ''
+
+    if (name1 && name2) {
+        const nameSimilarity = calculateSimilarity(name1, name2)
+        if (nameSimilarity > 0.7) return true // Very similar names
+    }
+
+    // Check description similarity
+    const desc1 = skill1.description?.toLowerCase().trim() || ''
+    const desc2 = skill2.description?.toLowerCase().trim() || ''
+
+    if (desc1 && desc2) {
+        const descSimilarity = calculateSimilarity(desc1, desc2)
+        if (descSimilarity > 0.8) return true // Very similar descriptions
+    }
+
+    // Check content similarity (first 500 chars)
+    const content1 = skill1.markdown.substring(0, 500).toLowerCase().trim()
+    const content2 = skill2.markdown.substring(0, 500).toLowerCase().trim()
+
+    if (content1.length > 50 && content2.length > 50) {
+        const contentSimilarity = calculateSimilarity(content1, content2)
+        if (contentSimilarity > 0.75) return true // Very similar content
+    }
+
+    return false
+}
+
+/**
+ * Deduplicate skills by removing similar/duplicate entries
+ */
+function deduplicateSkills(skills: GeneratedSkill[]): GeneratedSkill[] {
+    if (skills.length <= 1) return skills
+
+    const unique: GeneratedSkill[] = []
+    const seen: boolean[] = new Array(skills.length).fill(false)
+
+    for (let i = 0; i < skills.length; i++) {
+        if (seen[i]) continue
+
+        let isDuplicate = false
+        for (let j = i + 1; j < skills.length; j++) {
+            if (seen[j]) continue
+
+            if (areSkillsSimilar(skills[i], skills[j])) {
+                // Keep the one with better validation status or more content
+                const keepFirst =
+                    skills[i].validationStatus === 'valid' && skills[j].validationStatus !== 'valid' ||
+                    skills[i].markdown.length > skills[j].markdown.length
+
+                if (keepFirst) {
+                    seen[j] = true
+                } else {
+                    isDuplicate = true
+                    seen[j] = false // Will be handled in next iteration
+                    break
+                }
+            }
+        }
+
+        if (!isDuplicate) {
+            unique.push(skills[i])
+            seen[i] = true
+        }
+    }
+
+    return unique
+}
+
+/**
  * Result from the clarification orchestration
  */
 export interface ClarificationResult {
@@ -97,6 +199,45 @@ export async function planSkills(
 
         if (!skillPlan.skillCount || !Array.isArray(skillPlan.skills) || skillPlan.skills.length !== skillPlan.skillCount) {
             throw new Error('Invalid skill plan structure')
+        }
+
+        // Deduplicate skills in the plan
+        const uniquePlanSkills: SkillPlan['skills'] = []
+        const seenNames = new Set<string>()
+
+        for (const skill of skillPlan.skills) {
+            const normalizedName = skill.name.toLowerCase().trim()
+
+            // Check for duplicate names
+            if (seenNames.has(normalizedName)) {
+                console.warn(`Skipping duplicate skill in plan: ${skill.name}`)
+                continue
+            }
+
+            // Check for similar descriptions
+            const isSimilar = uniquePlanSkills.some(existing => {
+                const descSimilarity = calculateSimilarity(
+                    existing.description.toLowerCase(),
+                    skill.description.toLowerCase()
+                )
+                return descSimilarity > 0.8
+            })
+
+            if (!isSimilar) {
+                uniquePlanSkills.push(skill)
+                seenNames.add(normalizedName)
+            } else {
+                console.warn(`Skipping similar skill in plan: ${skill.name}`)
+            }
+        }
+
+        // Update plan with deduplicated skills
+        if (uniquePlanSkills.length > 0) {
+            skillPlan.skills = uniquePlanSkills
+            skillPlan.skillCount = uniquePlanSkills.length
+        } else {
+            // Fallback if all skills were duplicates
+            throw new Error('All skills in plan were duplicates')
         }
     } catch (error) {
         console.error('Failed to parse skill plan:', text, error)
@@ -329,23 +470,26 @@ Each skill must be standalone, match its category pattern, and include relevant 
         skills.push(skill)
     }
 
+    // Deduplicate skills before final processing
+    const uniqueSkills = deduplicateSkills(skills)
+
     const overallStatus: 'valid' | 'fixed' | 'failed' =
-        skills.some(s => s.validationStatus === 'failed') ? 'failed' :
-            skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
+        uniqueSkills.some(s => s.validationStatus === 'failed') ? 'failed' :
+            uniqueSkills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
                 'valid'
 
     const success = overallStatus !== 'failed'
 
     const allIssues: ValidatorResponse['issues'] = []
-    for (const skill of skills) {
+    for (const skill of uniqueSkills) {
         allIssues.push(...skill.issues)
     }
 
-    const firstSkill = skills[0]
+    const firstSkill = uniqueSkills[0]
 
     return {
         success,
-        skills,
+        skills: uniqueSkills,
         skillMarkdown: firstSkill?.markdown,
         name: firstSkill?.name,
         description: firstSkill?.description,
@@ -411,23 +555,26 @@ Each skill must be standalone, match its category pattern, and include relevant 
         skills.push(skill)
     }
 
+    // Deduplicate skills before final processing
+    const uniqueSkills = deduplicateSkills(skills)
+
     const overallStatus: 'valid' | 'fixed' | 'failed' =
-        skills.some(s => s.validationStatus === 'failed') ? 'failed' :
-            skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
+        uniqueSkills.some(s => s.validationStatus === 'failed') ? 'failed' :
+            uniqueSkills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
                 'valid'
 
     const success = overallStatus !== 'failed'
 
     const allIssues: ValidatorResponse['issues'] = []
-    for (const skill of skills) {
+    for (const skill of uniqueSkills) {
         allIssues.push(...skill.issues)
     }
 
-    const firstSkill = skills[0]
+    const firstSkill = uniqueSkills[0]
 
     const result: GenerationResult = {
         success,
-        skills,
+        skills: uniqueSkills,
         skillMarkdown: firstSkill?.markdown,
         name: firstSkill?.name,
         description: firstSkill?.description,

@@ -12,6 +12,8 @@ SKILL CATEGORIES - Always consider generating skills across these dimensions:
 CRITICAL RULES:
 - Generate 3-5 skills by default to cover different aspects of the domain
 - Each skill should be independently usable but complementary to others
+- AVOID DUPLICATES: Each skill must address a DISTINCT concern - no overlapping capabilities
+- Ensure skills have clearly different names, descriptions, and purposes
 - Consider the full ecosystem: if user wants "document editing", also consider workflow, style constraints, and testing skills
 - Skills should cover: WHAT to do (core), HOW to do it (workflow), RULES to follow (constraints), and HOW to verify (validation)
 
@@ -22,10 +24,10 @@ SKILL TYPE PATTERNS:
 - **Core skills** describe capabilities, utilities, and techniques
 
 For each skill, provide:
-- A clear, focused name (kebab-case)
-- A brief description explaining when an agent should use this skill
+- A clear, focused name (kebab-case) - MUST be unique and distinct from other skills
+- A brief description explaining when an agent should use this skill - MUST clearly differentiate from other skills
 - The category (core, workflow, constraints, integration, validation)
-- The specific concern/capability it addresses
+- The specific concern/capability it addresses - MUST be distinct and non-overlapping with other skills
 
 Respond with ONLY valid JSON in this exact format:
 {
@@ -116,6 +118,12 @@ YOU WILL RECEIVE a skill generation plan specifying:
 - The reasoning for this skill breakdown
 
 FOLLOW THE PLAN EXACTLY. Generate each specified skill.
+
+CRITICAL: Each skill must be UNIQUE and DISTINCT:
+- Different names (not variations of the same name)
+- Different descriptions (not rewordings of the same concept)
+- Different content (not duplicate or near-duplicate sections)
+- Each skill should address a clearly separate concern
 
 ## SKILL.md Format
 
@@ -262,6 +270,12 @@ Structure:
 Separate each complete SKILL.md with exactly: \n\n---SKILL_SEPARATOR---\n\n
 
 Each skill starts with --- frontmatter and includes all required sections.
+
+IMPORTANT: When generating multiple skills:
+- Ensure each skill has a UNIQUE name (check for duplicates)
+- Ensure each skill addresses a DISTINCT concern (no overlap)
+- Do NOT generate variations of the same skill
+- Do NOT copy content between skills
 
 ## QUALITY CHECKLIST
 
