@@ -29,7 +29,8 @@ import {
 } from './ai-elements/prompt-input'
 import type { ClarifierQuestion, QAPair, ValidationIssue } from '@/lib/agents/types'
 import { nanoid } from 'nanoid'
-import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon } from 'lucide-react'
+import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, EditIcon, EyeIcon } from 'lucide-react'
+import { MarkdownEditor } from './MarkdownEditor'
 
 // Types
 interface SingleSkillData {
@@ -77,6 +78,7 @@ export function SkillShiftApp() {
     const [isProcessing, setIsProcessing] = useState(false)
     const [maxTurnsReached, setMaxTurnsReached] = useState(false)
     const [maxTurnsMessage, setMaxTurnsMessage] = useState<string>('')
+    const [editingMessageIds, setEditingMessageIds] = useState<Set<string>>(new Set())
 
     // Refs for clarification flow
     const intentRef = useRef('')
@@ -554,6 +556,43 @@ export function SkillShiftApp() {
         setTimeout(() => setCopied(false), 2000)
     }, [])
 
+    // Handle toggle edit mode
+    const handleToggleEdit = useCallback((messageId: string) => {
+        setEditingMessageIds(prev => {
+            const newSet = new Set(prev)
+            if (newSet.has(messageId)) {
+                newSet.delete(messageId)
+            } else {
+                newSet.add(messageId)
+            }
+            return newSet
+        })
+    }, [])
+
+    // Handle markdown change in editor
+    const handleMarkdownChange = useCallback((messageId: string, newMarkdown: string) => {
+        setMessages(prev => prev.map(msg => {
+            if (msg.id !== messageId || !msg.skillData) return msg
+            return {
+                ...msg,
+                skillData: {
+                    ...msg.skillData,
+                    skills: msg.skillData.skills?.map((skill, idx) => 
+                        idx === 0 ? { ...skill, markdown: newMarkdown } : skill
+                    ) || [{
+                        markdown: newMarkdown,
+                        name: msg.skillData.name,
+                        description: msg.skillData.description,
+                        validationStatus: msg.skillData.validationStatus,
+                        issues: msg.skillData.issues,
+                    }],
+                    // Backward compatibility
+                    skillMarkdown: newMarkdown,
+                }
+            }
+        }))
+    }, [])
+
     // Skip clarification
     const handleSkipClarification = useCallback(() => {
         setConversationState('generating')
@@ -637,6 +676,9 @@ export function SkillShiftApp() {
                                                         return <div className="text-muted-foreground">No skill content</div>
                                                     }
 
+                                                    const isEditing = editingMessageIds.has(message.id)
+                                                    const currentMarkdown = skillData.markdown
+
                                                     return (
                                                         <div className="w-full max-w-2xl space-y-4">
                                                             <div className="flex items-center gap-2">
@@ -647,10 +689,26 @@ export function SkillShiftApp() {
                                                                     </span>
                                                                 )}
                                                             </div>
-                                                            <CodeBlock code={skillData.markdown} language="markdown">
-                                                                <CodeBlockCopyButton />
-                                                            </CodeBlock>
+                                                            {isEditing ? (
+                                                                <MarkdownEditor
+                                                                    content={currentMarkdown}
+                                                                    onChange={(newMarkdown) => handleMarkdownChange(message.id, newMarkdown)}
+                                                                    editable={true}
+                                                                    placeholder="Edit your skill markdown..."
+                                                                    showToolbar={true}
+                                                                />
+                                                            ) : (
+                                                                <CodeBlock code={currentMarkdown} language="markdown">
+                                                                    <CodeBlockCopyButton />
+                                                                </CodeBlock>
+                                                            )}
                                                             <MessageActions>
+                                                                <MessageAction
+                                                                    tooltip={isEditing ? "View Mode" : "Edit Mode"}
+                                                                    onClick={() => handleToggleEdit(message.id)}
+                                                                >
+                                                                    {isEditing ? <EyeIcon className="size-4" /> : <EditIcon className="size-4" />}
+                                                                </MessageAction>
                                                                 <MessageAction
                                                                     tooltip="Save to Library"
                                                                     onClick={() => handleSaveSkill(message.id)}
@@ -665,7 +723,7 @@ export function SkillShiftApp() {
                                                                 </MessageAction>
                                                                 <MessageAction
                                                                     tooltip="Copy"
-                                                                    onClick={() => handleCopy(skillData.markdown)}
+                                                                    onClick={() => handleCopy(currentMarkdown)}
                                                                 >
                                                                     {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
                                                                 </MessageAction>
