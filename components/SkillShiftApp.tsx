@@ -71,6 +71,7 @@ export function SkillShiftApp() {
     const [messages, setMessages] = useState<ChatMessage[]>([])
     const [conversationState, setConversationState] = useState<ConversationState>('idle')
     const [selectedSkillId, setSelectedSkillId] = useState<Id<'skills'> | null>(null)
+    const [currentSessionId, setCurrentSessionId] = useState<Id<'skillSessions'> | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
     const [isProcessing, setIsProcessing] = useState(false)
@@ -85,6 +86,9 @@ export function SkillShiftApp() {
 
     // Mutations
     const createSkill = useMutation(api.skills.create)
+    const createSession = useMutation(api.sessions.create)
+    const updateSession = useMutation(api.sessions.appendQA)
+    const setSessionStatus = useMutation(api.sessions.setStatus)
 
     // Add message helper
     const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
@@ -109,6 +113,18 @@ export function SkillShiftApp() {
 
     // Generate skill(s)
     const generateSkill = useCallback(async (intent: string, qa: QAPair[]) => {
+        // Update session status to generating if we have a session
+        if (currentSessionId) {
+            try {
+                await setSessionStatus({
+                    sessionId: currentSessionId,
+                    status: 'generating',
+                })
+            } catch (err) {
+                console.error('Failed to update session status:', err)
+            }
+        }
+
         const loadingId = addMessage({
             role: 'assistant',
             content: 'Generating your skill...',
@@ -162,6 +178,18 @@ export function SkillShiftApp() {
                 })
             }
 
+            // Update session status to completed
+            if (currentSessionId) {
+                try {
+                    await setSessionStatus({
+                        sessionId: currentSessionId,
+                        status: 'completed',
+                    })
+                } catch (err) {
+                    console.error('Failed to update session status:', err)
+                }
+            }
+
             setConversationState('idle')
             setMaxTurnsReached(false)
             setMaxTurnsMessage('')
@@ -172,7 +200,7 @@ export function SkillShiftApp() {
             })
             setConversationState('idle')
         }
-    }, [addMessage, removeMessage, updateMessage])
+    }, [addMessage, removeMessage, updateMessage, currentSessionId, setSessionStatus])
 
     // Handle structured answers from ClarifierPanel
     const handleClarifierSubmit = useCallback(async (answers: Array<{ question: string; answer: string }>) => {
@@ -221,6 +249,18 @@ export function SkillShiftApp() {
 
             removeMessage(loadingId)
 
+            // Update session with new Q&A
+            if (currentSessionId) {
+                try {
+                    await updateSession({
+                        sessionId: currentSessionId,
+                        qa: answers,
+                    })
+                } catch (err) {
+                    console.error('Failed to update session:', err)
+                }
+            }
+
             // Handle max turns reached
             if (data.maxTurnsReached) {
                 setMaxTurnsReached(true)
@@ -230,6 +270,17 @@ export function SkillShiftApp() {
             if (data.status === 'ready') {
                 setConversationState('generating')
                 pendingQuestionsRef.current = []
+                // Update session status to ready
+                if (currentSessionId) {
+                    try {
+                        await setSessionStatus({
+                            sessionId: currentSessionId,
+                            status: 'ready',
+                        })
+                    } catch (err) {
+                        console.error('Failed to update session status:', err)
+                    }
+                }
                 await generateSkill(intentRef.current, qaRef.current)
             } else {
                 // Just update pending questions - ClarifierPanel will render them
@@ -244,7 +295,7 @@ export function SkillShiftApp() {
         } finally {
             setIsProcessing(false)
         }
-    }, [addMessage, removeMessage, updateMessage, generateSkill])
+    }, [addMessage, removeMessage, updateMessage, generateSkill, currentSessionId, updateSession, setSessionStatus])
 
     // Handle new intent submission
     const handleSubmit = useCallback(async (message: PromptInputMessage) => {
@@ -275,6 +326,10 @@ export function SkillShiftApp() {
         })
 
         try {
+            // Create session in Convex
+            const sessionId = await createSession({ intent: text })
+            setCurrentSessionId(sessionId)
+
             const response = await fetch('/api/skills/session/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -293,6 +348,15 @@ export function SkillShiftApp() {
 
             if (data.status === 'ready') {
                 setConversationState('generating')
+                // Update session status to ready
+                try {
+                    await setSessionStatus({
+                        sessionId: sessionId,
+                        status: 'ready',
+                    })
+                } catch (err) {
+                    console.error('Failed to update session status:', err)
+                }
                 await generateSkill(text, [])
             } else {
                 // Just set state and pending questions - ClarifierPanel will render them
@@ -307,12 +371,13 @@ export function SkillShiftApp() {
         } finally {
             setIsProcessing(false)
         }
-    }, [addMessage, removeMessage, updateMessage, generateSkill])
+    }, [addMessage, removeMessage, updateMessage, generateSkill, createSession, setSessionStatus])
 
     // Handle new chat
     const handleNewChat = useCallback(() => {
         setMessages([])
         setSelectedSkillId(null)
+        setCurrentSessionId(null)
         setConversationState('idle')
         setError(null)
         setMaxTurnsReached(false)
@@ -326,6 +391,7 @@ export function SkillShiftApp() {
     // Handle loading a skill from sidebar
     const handleLoadSkill = useCallback((skill: Skill) => {
         setSelectedSkillId(skill._id)
+        setCurrentSessionId(null)
         setConversationState('idle')
         setError(null)
         setMaxTurnsReached(false)
@@ -386,6 +452,50 @@ export function SkillShiftApp() {
                 repairAttempts: 0,
             },
             timestamp: skill.updatedAt,
+        })
+
+        setMessages(newMessages)
+    }, [])
+
+    // Handle loading a session/conversation from sidebar
+    const handleLoadSession = useCallback((session: { _id: Id<'skillSessions'>, intent: string, qa: QAPair[], createdAt: number, updatedAt: number, status: string }) => {
+        setSelectedSkillId(null)
+        setCurrentSessionId(session._id)
+        setConversationState(session.status === 'completed' ? 'idle' : session.status === 'clarifying' ? 'clarifying' : 'idle')
+        setError(null)
+        setMaxTurnsReached(false)
+        setMaxTurnsMessage('')
+        intentRef.current = session.intent
+        qaRef.current = session.qa
+        pendingQuestionsRef.current = []
+
+        // Build messages from the session
+        const newMessages: ChatMessage[] = [
+            {
+                id: nanoid(),
+                role: 'user',
+                content: session.intent,
+                type: 'intent',
+                timestamp: session.createdAt,
+            },
+        ]
+
+        // Add Q&A as messages
+        session.qa.forEach((qa, i) => {
+            newMessages.push({
+                id: nanoid(),
+                role: 'assistant',
+                content: qa.question,
+                type: 'question',
+                timestamp: session.createdAt + i * 2,
+            })
+            newMessages.push({
+                id: nanoid(),
+                role: 'user',
+                content: qa.answer,
+                type: 'answer',
+                timestamp: session.createdAt + i * 2 + 1,
+            })
         })
 
         setMessages(newMessages)
@@ -462,7 +572,9 @@ export function SkillShiftApp() {
             {/* Sidebar */}
             <GenerationsSidebar
                 selectedSkillId={selectedSkillId}
+                currentSessionId={currentSessionId}
                 onSelectSkill={handleLoadSkill}
+                onSelectSession={handleLoadSession}
                 onNewChat={handleNewChat}
             />
 
