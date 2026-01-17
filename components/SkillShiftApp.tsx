@@ -849,15 +849,6 @@ export function SkillShiftApp() {
                                                             <div className={showActions ? "w-full max-w-2xl space-y-4" : "space-y-4"}>
                                                                 <div className="flex items-center gap-2">
                                                                     <span className="font-medium">{skill.name || `Generated Skill ${index + 1}`}</span>
-                                                                    {skill.validationStatus === 'valid' && (
-                                                                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
-                                                                    )}
-                                                                    {skill.validationStatus === 'fixed' && (
-                                                                        <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
-                                                                    )}
-                                                                    {skill.validationStatus === 'failed' && (
-                                                                        <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-xs text-red-600">Failed</span>
-                                                                    )}
                                                                 </div>
                                                                 {skillIsEditing ? (
                                                                     <MarkdownEditor

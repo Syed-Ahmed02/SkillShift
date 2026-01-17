@@ -21,19 +21,15 @@ export async function POST(request: NextRequest) {
             )
         }
 
-        // Create a ReadableStream for streaming response
         const encoder = new TextEncoder()
         const stream = new ReadableStream({
             async start(controller) {
                 try {
-                    // Stream generation
                     for await (const item of streamGeneration(body.intent, body.qa || [])) {
                         if (item.type === 'chunk') {
-                            // Send text chunk
                             const data = JSON.stringify({ type: 'chunk', text: item.text }) + '\n'
                             controller.enqueue(encoder.encode(data))
                         } else if (item.type === 'complete') {
-                            // Send final result with metadata
                             const result = item.result
                             const response: GenerateResponse = {
                                 success: result.success,

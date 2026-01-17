@@ -86,7 +86,6 @@ export async function planSkills(
         prompt: context,
     })
 
-    // Parse the JSON response
     let skillPlan: SkillPlan
     try {
         const jsonMatch = text.match(/\{[\s\S]*\}/)
@@ -95,13 +94,11 @@ export async function planSkills(
         }
         skillPlan = JSON.parse(jsonMatch[0])
         
-        // Validate structure
         if (!skillPlan.skillCount || !Array.isArray(skillPlan.skills) || skillPlan.skills.length !== skillPlan.skillCount) {
             throw new Error('Invalid skill plan structure')
         }
     } catch (error) {
         console.error('Failed to parse skill plan:', text, error)
-        // Fallback: assume single skill
         skillPlan = {
             skillCount: 1,
             skills: [{
@@ -289,10 +286,8 @@ export async function runGeneration(
 ): Promise<GenerationResult> {
     const context = buildContext(intent, qa)
 
-    // Step 0: Plan skills - determine how many and what concerns to separate
     const skillPlan = await planSkills(intent, qa)
     
-    // Build enhanced prompt with skill plan
     const enhancedPrompt = `${context}
 
 ## Skill Generation Plan
@@ -308,17 +303,14 @@ Reasoning: ${skillPlan.reasoning}
 
 Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
 
-    // Step 1: Generate the skill(s)
     const { text: generatedOutput } = await generateText({
         model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
         system: GENERATOR_SYSTEM_PROMPT,
         prompt: enhancedPrompt,
     })
 
-    // Step 2: Parse multiple skills
     const skillMarkdowns = parseMultipleSkills(generatedOutput.trim())
 
-    // Step 3: Validate and repair each skill
     const repairAttempts = { current: 0 }
     const skills: GeneratedSkill[] = []
 
@@ -327,7 +319,6 @@ Generate each skill according to the plan above. Each skill must be standalone a
         skills.push(skill)
     }
 
-    // Determine overall status
     const overallStatus: 'valid' | 'fixed' | 'failed' =
         skills.some(s => s.validationStatus === 'failed') ? 'failed' :
             skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
@@ -335,19 +326,16 @@ Generate each skill according to the plan above. Each skill must be standalone a
 
     const success = overallStatus !== 'failed'
 
-    // Collect all issues
     const allIssues: ValidatorResponse['issues'] = []
     for (const skill of skills) {
         allIssues.push(...skill.issues)
     }
 
-    // Backward compatibility: single skill fields (use first skill if only one)
     const firstSkill = skills[0]
 
     return {
         success,
         skills,
-        // Backward compatibility fields
         skillMarkdown: firstSkill?.markdown,
         name: firstSkill?.name,
         description: firstSkill?.description,
@@ -359,8 +347,6 @@ Generate each skill according to the plan above. Each skill must be standalone a
 
 /**
  * Stream generation with conditional validation/repair delegation
- * Streams text generation, then performs validation/repair after streaming completes
- * Returns an async generator that yields text chunks and metadata
  */
 export async function* streamGeneration(
     intent: string,
@@ -368,10 +354,8 @@ export async function* streamGeneration(
 ): AsyncGenerator<{ type: 'chunk'; text: string } | { type: 'complete'; result: GenerationResult }, void, unknown> {
     const context = buildContext(intent, qa)
 
-    // Step 0: Plan skills - determine how many and what concerns to separate
     const skillPlan = await planSkills(intent, qa)
     
-    // Build enhanced prompt with skill plan
     const enhancedPrompt = `${context}
 
 ## Skill Generation Plan
@@ -387,24 +371,20 @@ Reasoning: ${skillPlan.reasoning}
 
 Generate each skill according to the plan above. Each skill must be standalone and focused on its specific concern.`
 
-    // Step 1: Stream the skill generation
     const { textStream } = streamText({
         model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
         system: GENERATOR_SYSTEM_PROMPT,
         prompt: enhancedPrompt,
     })
 
-    // Collect the full streamed output while yielding chunks
     let generatedOutput = ''
     for await (const textChunk of textStream) {
         generatedOutput += textChunk
         yield { type: 'chunk', text: textChunk }
     }
 
-    // Step 2: Parse multiple skills from the complete output
     const skillMarkdowns = parseMultipleSkills(generatedOutput.trim())
 
-    // Step 3: Validate and repair each skill (blocking after streaming)
     const repairAttempts = { current: 0 }
     const skills: GeneratedSkill[] = []
 
@@ -413,7 +393,6 @@ Generate each skill according to the plan above. Each skill must be standalone a
         skills.push(skill)
     }
 
-    // Determine overall status
     const overallStatus: 'valid' | 'fixed' | 'failed' =
         skills.some(s => s.validationStatus === 'failed') ? 'failed' :
             skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
@@ -421,19 +400,16 @@ Generate each skill according to the plan above. Each skill must be standalone a
 
     const success = overallStatus !== 'failed'
 
-    // Collect all issues
     const allIssues: ValidatorResponse['issues'] = []
     for (const skill of skills) {
         allIssues.push(...skill.issues)
     }
 
-    // Backward compatibility: single skill fields (use first skill if only one)
     const firstSkill = skills[0]
 
     const result: GenerationResult = {
         success,
         skills,
-        // Backward compatibility fields
         skillMarkdown: firstSkill?.markdown,
         name: firstSkill?.name,
         description: firstSkill?.description,
@@ -442,7 +418,6 @@ Generate each skill according to the plan above. Each skill must be standalone a
         repairAttempts: repairAttempts.current,
     }
 
-    // Yield final result
     yield { type: 'complete', result }
 }
 
