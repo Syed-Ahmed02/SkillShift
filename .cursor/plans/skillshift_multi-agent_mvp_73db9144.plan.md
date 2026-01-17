@@ -195,4 +195,3 @@ Files:
 
 - `auth-clerk`: Add Clerk auth scaffolding.
 - `convex-schema`: Create schema + session/skills tables + functions.
-- `convex-client`: Add Convex provider wiring.
