@@ -7,9 +7,9 @@ import { Loader } from '@/components/ai-elements/loader'
 
 export default function Page() {
     return (
-        <div className="min-h-screen bg-background">
+        <div className="h-screen overflow-hidden bg-background">
             <AuthLoading>
-                <div className="flex min-h-screen items-center justify-center">
+                <div className="flex h-full items-center justify-center">
                     <div className="flex flex-col items-center gap-4">
                         <Loader size={24} />
                         <p className="text-muted-foreground text-sm">Loading...</p>
@@ -18,7 +18,7 @@ export default function Page() {
             </AuthLoading>
 
             <Unauthenticated>
-                <div className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+                <div className="flex h-full flex-col items-center justify-center gap-8 p-8">
                     <div className="flex flex-col items-center gap-4 text-center">
                         <div className="flex items-center gap-2">
                             <div className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-lg">
@@ -39,20 +39,23 @@ export default function Page() {
             </Unauthenticated>
 
             <Authenticated>
-                <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-                    <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
+                <div className="flex h-full flex-col">
+                    {/* Header */}
+                    <header className="z-50 flex h-12 shrink-0 items-center justify-between border-b bg-background px-4">
                         <div className="flex items-center gap-2">
-                            <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-sm">
+                            <div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-xs">
                                 S
                             </div>
-                            <span className="font-semibold">SkillShift</span>
+                            <span className="font-semibold text-sm">SkillShift</span>
                         </div>
                         <UserButton afterSignOutUrl="/" />
+                    </header>
+
+                    {/* App Content */}
+                    <div className="flex-1 overflow-hidden">
+                        <SkillShiftApp />
                     </div>
-                </header>
-                <main className="mx-auto max-w-5xl p-4">
-                    <SkillShiftApp />
-                </main>
+                </div>
             </Authenticated>
         </div>
     )
