@@ -23,8 +23,36 @@ export interface Skill {
 export interface Session {
     _id: Id<'skillSessions'>
     intent: string
+    turn: number
     qa: Array<{ question: string; answer: string }>
     status: 'clarifying' | 'ready' | 'generating' | 'completed' | 'failed'
+    finalResult?: {
+        success: boolean
+        skills: Array<{
+            markdown: string
+            name?: string
+            description?: string
+            validationStatus: 'valid' | 'fixed' | 'failed'
+            issues?: Array<{
+                type: string
+                severity: string
+                description: string
+                suggestion: string
+            }>
+        }>
+        // Backward compatibility - single skill fields
+        skillMarkdown?: string
+        name?: string
+        description?: string
+        validationStatus?: 'valid' | 'fixed' | 'failed'
+        issues?: Array<{
+            type: string
+            severity: string
+            description: string
+            suggestion: string
+        }>
+        repairAttempts: number
+    }
     createdAt: number
     updatedAt: number
 }
