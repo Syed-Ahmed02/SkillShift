@@ -7,7 +7,6 @@ import type { Id } from '@/convex/_generated/dataModel'
 import { GenerationsSidebar, type Skill } from './GenerationsSidebar'
 import { Button } from './ui/button'
 import { Loader } from './ai-elements/loader'
-import { CodeBlock, CodeBlockCopyButton } from './ai-elements/code-block'
 import {
     Conversation,
     ConversationContent,
@@ -19,7 +18,13 @@ import {
     MessageContent,
     MessageActions,
     MessageAction,
+    MessageResponse,
 } from './ai-elements/message'
+import {
+    Collapsible,
+    CollapsibleTrigger,
+    CollapsibleContent,
+} from './ui/collapsible'
 import {
     PromptInput,
     PromptInputTextarea,
@@ -29,7 +34,8 @@ import {
 } from './ai-elements/prompt-input'
 import type { ClarifierQuestion, QAPair, ValidationIssue } from '@/lib/agents/types'
 import { nanoid } from 'nanoid'
-import { MessageCircleIcon, SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon } from 'lucide-react'
+import { MessageCircleIcon, SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, ChevronDownIcon } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 // Types
 interface GenerationResult {
@@ -63,6 +69,7 @@ export function SkillShiftApp() {
     const [selectedSkillId, setSelectedSkillId] = useState<Id<'skills'> | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
+    const [expandedSkills, setExpandedSkills] = useState<Record<string, boolean>>({})
 
     // Refs for clarification flow
     const intentRef = useRef('')
@@ -441,18 +448,34 @@ export function SkillShiftApp() {
                                             </div>
                                         ) : message.type === 'skill' && message.skillData?.skillMarkdown ? (
                                             <div className="w-full max-w-2xl space-y-4">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-medium">{message.skillData.name || 'Generated Skill'}</span>
-                                                    {message.skillData.validationStatus === 'valid' && (
-                                                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
-                                                    )}
-                                                    {message.skillData.validationStatus === 'fixed' && (
-                                                        <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
-                                                    )}
-                                                </div>
-                                                <CodeBlock code={message.skillData.skillMarkdown} language="markdown">
-                                                    <CodeBlockCopyButton />
-                                                </CodeBlock>
+                                                <Collapsible
+                                                    defaultOpen={true}
+                                                    open={expandedSkills[message.id] ?? true}
+                                                    onOpenChange={(open) => setExpandedSkills(prev => ({ ...prev, [message.id]: open }))}
+                                                >
+                                                    <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-accent/50">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="font-medium">{message.skillData.name || 'Generated Skill'}</span>
+                                                            {message.skillData.validationStatus === 'valid' && (
+                                                                <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
+                                                            )}
+                                                            {message.skillData.validationStatus === 'fixed' && (
+                                                                <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
+                                                            )}
+                                                        </div>
+                                                        <ChevronDownIcon
+                                                            className={cn(
+                                                                "size-4 text-muted-foreground transition-transform",
+                                                                (expandedSkills[message.id] ?? true) ? "rotate-180" : "rotate-0"
+                                                            )}
+                                                        />
+                                                    </CollapsibleTrigger>
+                                                    <CollapsibleContent className="mt-2">
+                                                        <MessageResponse>
+                                                            {message.skillData.skillMarkdown}
+                                                        </MessageResponse>
+                                                    </CollapsibleContent>
+                                                </Collapsible>
                                                 <MessageActions>
                                                     <MessageAction
                                                         tooltip="Save to Library"
