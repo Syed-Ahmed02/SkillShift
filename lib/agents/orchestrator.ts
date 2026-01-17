@@ -1,5 +1,5 @@
 // Orchestrator agent that delegates to specialist agents as needed
-import { generateText } from 'ai'
+import { generateText, streamText } from 'ai'
 import { z } from 'zod'
 import { cerebrasProvider } from '@/lib/cerebras'
 import {
@@ -277,6 +277,76 @@ export async function runGeneration(
         issues: allIssues,
         repairAttempts: repairAttempts.current,
     }
+}
+
+/**
+ * Stream generation with conditional validation/repair delegation
+ * Streams text generation, then performs validation/repair after streaming completes
+ * Returns an async generator that yields text chunks and metadata
+ */
+export async function* streamGeneration(
+    intent: string,
+    qa: QAPair[]
+): AsyncGenerator<{ type: 'chunk'; text: string } | { type: 'complete'; result: GenerationResult }, void, unknown> {
+    const context = buildContext(intent, qa)
+
+    // Step 1: Stream the skill generation
+    const { textStream } = streamText({
+        model: cerebrasProvider(process.env.CEREBRAS_MODEL ?? 'zai-glm-4.7'),
+        system: GENERATOR_SYSTEM_PROMPT,
+        prompt: context,
+    })
+
+    // Collect the full streamed output while yielding chunks
+    let generatedOutput = ''
+    for await (const textChunk of textStream) {
+        generatedOutput += textChunk
+        yield { type: 'chunk', text: textChunk }
+    }
+
+    // Step 2: Parse multiple skills from the complete output
+    const skillMarkdowns = parseMultipleSkills(generatedOutput.trim())
+
+    // Step 3: Validate and repair each skill (blocking after streaming)
+    const repairAttempts = { current: 0 }
+    const skills: GeneratedSkill[] = []
+
+    for (const skillMarkdown of skillMarkdowns) {
+        const skill = await validateAndRepairSkill(context, skillMarkdown, repairAttempts)
+        skills.push(skill)
+    }
+
+    // Determine overall status
+    const overallStatus: 'valid' | 'fixed' | 'failed' =
+        skills.some(s => s.validationStatus === 'failed') ? 'failed' :
+            skills.some(s => s.validationStatus === 'fixed') ? 'fixed' :
+                'valid'
+
+    const success = overallStatus !== 'failed'
+
+    // Collect all issues
+    const allIssues: ValidatorResponse['issues'] = []
+    for (const skill of skills) {
+        allIssues.push(...skill.issues)
+    }
+
+    // Backward compatibility: single skill fields (use first skill if only one)
+    const firstSkill = skills[0]
+
+    const result: GenerationResult = {
+        success,
+        skills,
+        // Backward compatibility fields
+        skillMarkdown: firstSkill?.markdown,
+        name: firstSkill?.name,
+        description: firstSkill?.description,
+        validationStatus: overallStatus,
+        issues: allIssues,
+        repairAttempts: repairAttempts.current,
+    }
+
+    // Yield final result
+    yield { type: 'complete', result }
 }
 
 /**

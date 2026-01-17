@@ -18,6 +18,7 @@ import {
     MessageContent,
     MessageActions,
     MessageAction,
+    MessageResponse,
 } from './ai-elements/message'
 import {
     PromptInput,
@@ -28,7 +29,8 @@ import {
 } from './ai-elements/prompt-input'
 import type { ClarifierQuestion, QAPair, ValidationIssue } from '@/lib/agents/types'
 import { nanoid } from 'nanoid'
-import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, EditIcon, EyeIcon } from 'lucide-react'
+import { SaveIcon, RefreshCwIcon, CopyIcon, CheckIcon, SparklesIcon, EditIcon, EyeIcon, ChevronDownIcon } from 'lucide-react'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeBlock, CodeBlockCopyButton } from './ai-elements/code-block'
 
@@ -63,6 +65,7 @@ interface ChatMessage {
     skillData?: GenerationResult
     questions?: ClarifierQuestion[]
     timestamp: number
+    isStreaming?: boolean
 }
 
 type ConversationState = 'idle' | 'clarifying' | 'generating'
@@ -141,42 +144,99 @@ export function SkillShiftApp() {
             })
 
             if (!response.ok) {
-                const data = await response.json()
-                throw new Error(data.error || 'Failed to generate skill')
+                const errorData = await response.json()
+                throw new Error(errorData.error || 'Failed to generate skill')
             }
 
-            const data: GenerationResult = await response.json()
+            if (!response.body) {
+                throw new Error('Response body is null')
+            }
 
-            // Remove loading message
+            // Remove loading message and create streaming skill message
             removeMessage(loadingId)
 
-            // Add each skill as a separate message
-            if (data.skills && data.skills.length > 0) {
-                data.skills.forEach((skill) => {
-                    addMessage({
-                        role: 'assistant',
-                        content: skill.markdown || 'Generated skill',
+            // Create initial streaming message - we'll group multiple skills in one message
+            const streamingMessageId = addMessage({
+                role: 'assistant',
+                content: '',
+                type: 'skill',
+                isStreaming: true,
+                skillData: {
+                    success: false,
+                    skills: [],
+                    repairAttempts: 0,
+                    validationStatus: 'valid',
+                    issues: [],
+                },
+            })
+
+            let accumulatedText = ''
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let finalResult: GenerationResult | null = null
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+
+                    const chunk = decoder.decode(value, { stream: true })
+                    const lines = chunk.split('\n').filter(line => line.trim())
+
+                    for (const line of lines) {
+                        try {
+                            const data = JSON.parse(line)
+
+                            if (data.type === 'chunk') {
+                                // Update content as chunks arrive
+                                accumulatedText += data.text
+                                updateMessage(streamingMessageId, {
+                                    content: accumulatedText,
+                                    isStreaming: true,
+                                })
+                            } else if (data.type === 'complete') {
+                                // Final result received
+                                finalResult = data.result
+                            } else if (data.type === 'error') {
+                                throw new Error(data.error || 'Streaming error')
+                            }
+                        } catch {
+                            // Skip invalid JSON lines (might be incomplete chunks)
+                            console.warn('Failed to parse stream line:', line)
+                        }
+                    }
+                }
+            } finally {
+                reader.releaseLock()
+            }
+
+            // Update message with final result
+            if (finalResult) {
+                const skills = finalResult.skills || []
+
+                if (skills.length > 0) {
+                    // Update the streaming message with all skills grouped together
+                    updateMessage(streamingMessageId, {
+                        content: accumulatedText,
                         type: 'skill',
-                        skillData: {
-                            success: data.success,
-                            skills: [skill],
-                            // Backward compatibility
-                            skillMarkdown: skill.markdown,
-                            name: skill.name,
-                            description: skill.description,
-                            validationStatus: skill.validationStatus,
-                            issues: skill.issues,
-                            repairAttempts: data.repairAttempts,
-                        },
+                        isStreaming: false,
+                        skillData: finalResult,
                     })
-                })
-            } else if (data.skillMarkdown) {
-                // Backward compatibility - single skill format
-                addMessage({
-                    role: 'assistant',
-                    content: data.skillMarkdown || 'Generated skill',
+                } else if (finalResult.skillMarkdown) {
+                    // Backward compatibility - single skill format
+                    updateMessage(streamingMessageId, {
+                        content: finalResult.skillMarkdown || accumulatedText,
+                        type: 'skill',
+                        isStreaming: false,
+                        skillData: finalResult,
+                    })
+                }
+            } else {
+                // Fallback if no final result was received
+                updateMessage(streamingMessageId, {
+                    content: accumulatedText || 'Generated skill',
                     type: 'skill',
-                    skillData: data,
+                    isStreaming: false,
                 })
             }
 
@@ -663,79 +723,145 @@ export function SkillShiftApp() {
                                                 </div>
                                             ) : message.type === 'skill' && message.skillData ? (
                                                 (() => {
-                                                    // Get skill data - prefer first from skills array, fall back to backward compat fields
-                                                    const skillData = message.skillData.skills?.[0] || {
-                                                        markdown: message.skillData.skillMarkdown || '',
+                                                    const skills = message.skillData.skills || []
+                                                    const hasMultipleSkills = skills.length > 1
+
+                                                    // If multiple skills, use the first one for display; otherwise fall back to backward compat
+                                                    const primarySkill = skills[0] || {
+                                                        markdown: message.skillData.skillMarkdown || message.content || '',
                                                         name: message.skillData.name,
                                                         description: message.skillData.description,
                                                         validationStatus: message.skillData.validationStatus,
                                                         issues: message.skillData.issues,
                                                     }
 
-                                                    if (!skillData.markdown) {
+                                                    if (!primarySkill.markdown && !message.isStreaming) {
                                                         return <div className="text-muted-foreground">No skill content</div>
                                                     }
 
                                                     const isEditing = editingMessageIds.has(message.id)
-                                                    const currentMarkdown = skillData.markdown
+                                                    const isStreaming = message.isStreaming || false
+                                                    const currentMarkdown = primarySkill.markdown || message.content || ''
 
-                                                    return (
-                                                        <div className="w-full max-w-2xl space-y-4">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="font-medium">{skillData.name || 'Generated Skill'}</span>
-                                                                {skillData.validationStatus === 'valid' && (
-                                                                    <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
+                                                    // Render skill component (used for both single and first in multiple)
+                                                    const renderSkill = (skill: typeof primarySkill, index: number, showActions: boolean = false) => {
+                                                        const skillMarkdown = skill.markdown || currentMarkdown
+                                                        const skillIsEditing = isEditing && index === 0 // Only first skill can be edited for now
+
+                                                        return (
+                                                            <div className={showActions ? "w-full max-w-2xl space-y-4" : "space-y-4"}>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-medium">{skill.name || `Generated Skill ${index + 1}`}</span>
+                                                                    {skill.validationStatus === 'valid' && (
+                                                                        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-600">Valid</span>
+                                                                    )}
+                                                                    {skill.validationStatus === 'fixed' && (
+                                                                        <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
+                                                                    )}
+                                                                    {skill.validationStatus === 'failed' && (
+                                                                        <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-xs text-red-600">Failed</span>
+                                                                    )}
+                                                                </div>
+                                                                {skillIsEditing ? (
+                                                                    <MarkdownEditor
+                                                                        content={skillMarkdown}
+                                                                        onChange={(newMarkdown) => handleMarkdownChange(message.id, newMarkdown)}
+                                                                        editable={true}
+                                                                        placeholder="Edit your skill markdown..."
+                                                                        showToolbar={true}
+                                                                    />
+                                                                ) : isStreaming ? (
+                                                                    <MessageResponse>{skillMarkdown}</MessageResponse>
+                                                                ) : (
+                                                                    <CodeBlock code={skillMarkdown} language="markdown">
+                                                                        <CodeBlockCopyButton />
+                                                                    </CodeBlock>
                                                                 )}
-                                                                {skillData.validationStatus === 'fixed' && (
-                                                                    <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-xs text-blue-600">Auto-fixed</span>
-                                                                )}
-                                                                {message.skillData.skills && message.skillData.skills.length > 1 && (
-                                                                    <span className="rounded-full bg-purple-500/10 px-2 py-0.5 text-xs text-purple-600">
-                                                                        {message.skillData.skills.length} skills
-                                                                    </span>
+                                                                {showActions && (
+                                                                    <MessageActions>
+                                                                        <MessageAction
+                                                                            tooltip={skillIsEditing ? "View Mode" : "Edit Mode"}
+                                                                            onClick={() => handleToggleEdit(message.id)}
+                                                                        >
+                                                                            {skillIsEditing ? <EyeIcon className="size-4" /> : <EditIcon className="size-4" />}
+                                                                        </MessageAction>
+                                                                        <MessageAction
+                                                                            tooltip="Save to Library"
+                                                                            onClick={() => handleSaveSkill(message.id)}
+                                                                        >
+                                                                            <SaveIcon className="size-4" />
+                                                                        </MessageAction>
+                                                                        <MessageAction
+                                                                            tooltip="Regenerate"
+                                                                            onClick={() => handleRegenerate(message.id)}
+                                                                        >
+                                                                            <RefreshCwIcon className="size-4" />
+                                                                        </MessageAction>
+                                                                        <MessageAction
+                                                                            tooltip="Copy"
+                                                                            onClick={() => handleCopy(skillMarkdown)}
+                                                                        >
+                                                                            {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+                                                                        </MessageAction>
+                                                                    </MessageActions>
                                                                 )}
                                                             </div>
-                                                            {isEditing ? (
-                                                                <MarkdownEditor
-                                                                    content={currentMarkdown}
-                                                                    onChange={(newMarkdown) => handleMarkdownChange(message.id, newMarkdown)}
-                                                                    editable={true}
-                                                                    placeholder="Edit your skill markdown..."
-                                                                    showToolbar={true}
-                                                                />
-                                                            ) : (
-                                                                <CodeBlock code={currentMarkdown} language="markdown">
-                                                                    <CodeBlockCopyButton />
-                                                                </CodeBlock>
-                                                            )}
-                                                            <MessageActions>
-                                                                <MessageAction
-                                                                    tooltip={isEditing ? "View Mode" : "Edit Mode"}
-                                                                    onClick={() => handleToggleEdit(message.id)}
-                                                                >
-                                                                    {isEditing ? <EyeIcon className="size-4" /> : <EditIcon className="size-4" />}
-                                                                </MessageAction>
-                                                                <MessageAction
-                                                                    tooltip="Save to Library"
-                                                                    onClick={() => handleSaveSkill(message.id)}
-                                                                >
-                                                                    <SaveIcon className="size-4" />
-                                                                </MessageAction>
-                                                                <MessageAction
-                                                                    tooltip="Regenerate"
-                                                                    onClick={() => handleRegenerate(message.id)}
-                                                                >
-                                                                    <RefreshCwIcon className="size-4" />
-                                                                </MessageAction>
-                                                                <MessageAction
-                                                                    tooltip="Copy"
-                                                                    onClick={() => handleCopy(currentMarkdown)}
-                                                                >
-                                                                    {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
-                                                                </MessageAction>
-                                                            </MessageActions>
-                                                        </div>
-                                                    )
+                                                        )
+                                                    }
+
+                                                    if (hasMultipleSkills) {
+                                                        // Multiple skills - first one expanded, others in collapsible sections
+                                                        return (
+                                                            <div className="w-full max-w-2xl space-y-4">
+                                                                {/* First skill - always visible */}
+                                                                {renderSkill(primarySkill, 0, false)}
+
+                                                                {/* Additional skills in collapsible sections */}
+                                                                {skills.slice(1).map((skill, index) => (
+                                                                    <Collapsible key={index} defaultOpen={false}>
+                                                                        <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border bg-card px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-accent">
+                                                                            <span>Skill {index + 2}: {skill.name || `Generated Skill ${index + 2}`}</span>
+                                                                            <ChevronDownIcon className="size-4 transition-transform data-[state=open]:rotate-180" />
+                                                                        </CollapsibleTrigger>
+                                                                        <CollapsibleContent className="mt-4">
+                                                                            {renderSkill(skill, index + 1, false)}
+                                                                        </CollapsibleContent>
+                                                                    </Collapsible>
+                                                                ))}
+
+                                                                {/* Actions for the entire group */}
+                                                                <MessageActions>
+                                                                    <MessageAction
+                                                                        tooltip={isEditing ? "View Mode" : "Edit Mode"}
+                                                                        onClick={() => handleToggleEdit(message.id)}
+                                                                    >
+                                                                        {isEditing ? <EyeIcon className="size-4" /> : <EditIcon className="size-4" />}
+                                                                    </MessageAction>
+                                                                    <MessageAction
+                                                                        tooltip="Save to Library"
+                                                                        onClick={() => handleSaveSkill(message.id)}
+                                                                    >
+                                                                        <SaveIcon className="size-4" />
+                                                                    </MessageAction>
+                                                                    <MessageAction
+                                                                        tooltip="Regenerate"
+                                                                        onClick={() => handleRegenerate(message.id)}
+                                                                    >
+                                                                        <RefreshCwIcon className="size-4" />
+                                                                    </MessageAction>
+                                                                    <MessageAction
+                                                                        tooltip="Copy"
+                                                                        onClick={() => handleCopy(currentMarkdown)}
+                                                                    >
+                                                                        {copied ? <CheckIcon className="size-4" /> : <CopyIcon className="size-4" />}
+                                                                    </MessageAction>
+                                                                </MessageActions>
+                                                            </div>
+                                                        )
+                                                    } else {
+                                                        // Single skill - simple display with actions
+                                                        return renderSkill(primarySkill, 0, true)
+                                                    }
                                                 })()
                                             ) : message.type === 'error' ? (
                                                 <div className="text-destructive">{message.content}</div>

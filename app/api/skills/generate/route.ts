@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { runGeneration } from '@/lib/agents/orchestrator'
+import { streamGeneration } from '@/lib/agents/orchestrator'
 import type {
     QAPair,
     GenerateResponse,
@@ -21,28 +21,61 @@ export async function POST(request: NextRequest) {
             )
         }
 
-        // Use orchestrator for generation with conditional validation/repair
-        const result = await runGeneration(body.intent, body.qa || [])
+        // Create a ReadableStream for streaming response
+        const encoder = new TextEncoder()
+        const stream = new ReadableStream({
+            async start(controller) {
+                try {
+                    // Stream generation
+                    for await (const item of streamGeneration(body.intent, body.qa || [])) {
+                        if (item.type === 'chunk') {
+                            // Send text chunk
+                            const data = JSON.stringify({ type: 'chunk', text: item.text }) + '\n'
+                            controller.enqueue(encoder.encode(data))
+                        } else if (item.type === 'complete') {
+                            // Send final result with metadata
+                            const result = item.result
+                            const response: GenerateResponse = {
+                                success: result.success,
+                                skills: result.skills.map(skill => ({
+                                    markdown: skill.markdown,
+                                    name: skill.name,
+                                    description: skill.description,
+                                    validationStatus: skill.validationStatus,
+                                    issues: skill.issues.length > 0 ? skill.issues : undefined,
+                                })),
+                                // Backward compatibility - single skill fields
+                                skillMarkdown: result.skillMarkdown,
+                                name: result.name,
+                                description: result.description,
+                                validationStatus: result.validationStatus,
+                                issues: result.issues.length > 0 ? result.issues : undefined,
+                                repairAttempts: result.repairAttempts,
+                            }
+                            const data = JSON.stringify({ type: 'complete', result: response }) + '\n'
+                            controller.enqueue(encoder.encode(data))
+                            controller.close()
+                        }
+                    }
+                } catch (error) {
+                    console.error('Streaming error:', error)
+                    const errorData = JSON.stringify({ 
+                        type: 'error', 
+                        error: 'Failed to generate skill' 
+                    }) + '\n'
+                    controller.enqueue(encoder.encode(errorData))
+                    controller.close()
+                }
+            },
+        })
 
-        const response: GenerateResponse = {
-            success: result.success,
-            skills: result.skills.map(skill => ({
-                markdown: skill.markdown,
-                name: skill.name,
-                description: skill.description,
-                validationStatus: skill.validationStatus,
-                issues: skill.issues.length > 0 ? skill.issues : undefined,
-            })),
-            // Backward compatibility - single skill fields
-            skillMarkdown: result.skillMarkdown,
-            name: result.name,
-            description: result.description,
-            validationStatus: result.validationStatus,
-            issues: result.issues.length > 0 ? result.issues : undefined,
-            repairAttempts: result.repairAttempts,
-        }
-
-        return NextResponse.json(response)
+        return new Response(stream, {
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+            },
+        })
     } catch (error) {
         console.error('Generate error:', error)
         return NextResponse.json(
