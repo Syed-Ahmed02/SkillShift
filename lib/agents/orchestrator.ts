@@ -310,27 +310,32 @@ export async function runClarification(
  * Parse multiple skills from generator output
  */
 function parseMultipleSkills(output: string): string[] {
-    const separator = '\n\n---SKILL_SEPARATOR---\n\n'
-
-    // Check if output contains the separator
-    if (output.includes(separator)) {
-        const skills = output.split(separator).map(s => s.trim()).filter(s => s.length > 0)
+    // Try exact separator first
+    const exactSeparator = '\n\n---SKILL_SEPARATOR---\n\n'
+    if (output.includes(exactSeparator)) {
+        const skills = output.split(exactSeparator).map(s => s.trim()).filter(s => s.length > 0)
         // Only return multiple if we actually got multiple skills
         if (skills.length > 1) {
             return skills
         }
     }
 
-    // Also check for variations with different spacing
+    // Check for variations with different spacing and common typos
     const variations = [
-        '\n\n---SKILL_SEPARATOR---\n\n',
         '\n---SKILL_SEPARATOR---\n',
         '---SKILL_SEPARATOR---',
+        '\n\n---SKILL SEPARATOR---\n\n',  // Handle space variant
+        '\n---SKILL SEPARATOR---\n',
+        '---SKILL SEPARATOR---',
+        '\n\n---SKILL_SEPERATOR---\n\n',  // Handle misspelling
+        '\n---SKILL_SEPERATOR---\n',
+        '---SKILL_SEPERATOR---',
     ]
 
     for (const variant of variations) {
         if (output.includes(variant)) {
-            const skills = output.split(variant).map(s => s.trim()).filter(s => s.length > 0 && s.startsWith('---'))
+            const skills = output.split(variant).map(s => s.trim()).filter(s => s.length > 0)
+            // Only return multiple if we actually got multiple skills
             if (skills.length > 1) {
                 return skills
             }

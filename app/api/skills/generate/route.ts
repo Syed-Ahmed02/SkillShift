@@ -55,9 +55,9 @@ export async function POST(request: NextRequest) {
                     }
                 } catch (error) {
                     console.error('Streaming error:', error)
-                    const errorData = JSON.stringify({ 
-                        type: 'error', 
-                        error: 'Failed to generate skill' 
+                    const errorData = JSON.stringify({
+                        type: 'error',
+                        error: 'Failed to generate skill'
                     }) + '\n'
                     controller.enqueue(encoder.encode(errorData))
                     controller.close()
